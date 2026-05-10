@@ -388,12 +388,35 @@ UpdateExtractUI(*) {
 BuildTab_WrapIndent() {
     global Tabs, g, TX, TY
     Tabs.UseTab(6)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "Word wrap at column:")
-    global NumWrapCol := g.Add("Edit", "x+6 yp-2 w50 h22 Number", "80")
-    g.Add("Text",  "x" (TX+8) " y+10", "Indent / Dedent:")
-    global IndentRG := g.Add("Radio", "x" (TX+8) " y+4 Group", "Indent (add spaces)")
-    global IndentR2 := g.Add("Radio", "x" (TX+8) " y+4",       "Dedent (remove spaces)")
-    g.Add("Text",  "x" (TX+8) " y+8", "Spaces per level:")
+
+    col2 := TX + 320   ; x-origin of right column
+
+    ; ---- LEFT COLUMN ------------------------------------------------
+
+    ; Wrap mode — all three radios consecutive so they form one group
+    g.Add("Text",  "x" (TX+8) " y" (TY+8), "Wrap mode:")
+    global WrapRN     := g.Add("Radio", "x" (TX+8) " y+4 Group", "None")
+    global WrapRG     := g.Add("Radio", "x" (TX+8) " y+4",       "Hard wrap at column:")
+    global WrapR2     := g.Add("Radio", "x" (TX+8) " y+4",       "Paragraph reflow (undo hard wraps)")
+    ; NumWrapCol floated right of "Hard wrap" label — use WrapRG pos
+    WrapRG.GetPos(&rx, &ry)
+    global NumWrapCol := g.Add("Edit", "x" (rx + 155) " y" (ry - 1) " w50 h22 Number", "80")
+
+    ; Bullets
+    g.Add("Text",  "x" (TX+8) " y+24", "Bullets:")
+    ; g.Add("Text",  "x" (TX+8) " y+10", "Bullets:")
+    global ChkBullet   := g.Add("Checkbox", "x" (TX+8) " y+4", "Add bullet to each line   Char:")
+    global EditBullet  := g.Add("Edit",     "x+6 yp-2 w30 h22", Chr(0x2022))   ; •
+    global ChkSkipCaps := g.Add("Checkbox", "x" (TX+8) " y+4", "Skip if first 2 chars uppercase")
+
+    ; ---- RIGHT COLUMN -----------------------------------------------
+
+    ; Indent / Dedent — all three radios consecutive
+    g.Add("Text",  "x" col2 " y" (TY+8), "Indent / Dedent:")
+    global IndentRN := g.Add("Radio", "x" col2 " y+4 Group", "None")
+    global IndentRG := g.Add("Radio", "x" col2 " y+4",       "Indent (add spaces)")
+    global IndentR2 := g.Add("Radio", "x" col2 " y+4",       "Dedent (remove spaces)")
+    g.Add("Text",  "x" col2 " y+8", "Spaces per level:")
     global NumIndent := g.Add("Edit", "x+6 yp-2 w40 h22 Number", "4")
 }
 
@@ -995,7 +1018,7 @@ Apply_FindReplace(txt) {
     replAll  := ChkFRAll.Value
 
     if useRegex {
-        flags := caseSens ? ")" : "i)"
+        flags := caseSens ? "m)" : "mi)"   ; m) = multiline: ^ and $ match per line
         pat   := flags . findStr
         if replAll
             return RegExReplace(txt, pat, replStr)
@@ -1177,29 +1200,98 @@ JoinArray(arr, sep) {
 }
 
 Apply_WrapIndent(txt) {
-    global NumWrapCol, IndentRG, NumIndent
+    global NumWrapCol, WrapRN, WrapRG, WrapR2, IndentRN, IndentRG, NumIndent
+    global ChkBullet, EditBullet, ChkSkipCaps
 
-    wrapCol  := Integer(NumWrapCol.Value)
-    spaces   := Integer(NumIndent.Value)
-    isIndent := IndentRG.Value ? true : false
+    wrapCol   := Integer(NumWrapCol.Value)
+    spaces    := Integer(NumIndent.Value)
+    isIndent  := IndentRG.Value ? true : false
+    doIndent  := !IndentRN.Value            ; false when None is selected
+    doHard    := WrapRG.Value   ? true : false   ; radio 2 = hard wrap
+    doReflow  := WrapR2.Value   ? true : false   ; radio 3 = paragraph reflow
+    doBullet  := ChkBullet.Value
+    bulletCh  := EditBullet.Value
+    skipCaps  := ChkSkipCaps.Value
+    if (bulletCh = "")
+        bulletCh := Chr(0x2022)
 
     lines := StrSplit(txt, "`n", "`r")
     out   := []
 
-    for line in lines {
-        ; --- Hard wrap ---
-        if (wrapCol > 0 && StrLen(line) > wrapCol) {
-            ; Wrap at word boundaries
-            wrapped := WordWrap(line, wrapCol)
-            for wl in wrapped
-                out.Push(wl)
-        } else {
-            out.Push(line)
+    ; --- Paragraph reflow: join soft-wrapped lines within paragraphs ---
+    ; A "paragraph break" is a blank line, or any line starting with
+    ; 2+ spaces / a tab (intentionally indented), or an ALL-CAPS header.
+    ; We join consecutive non-blank lines into one, then let hard-wrap follow.
+    if doReflow {
+        reflowed := []
+        cur := ""
+        for line in lines {
+            if (line = "") {
+                ; Blank line = paragraph boundary
+                if (cur != "")
+                    reflowed.Push(cur)
+                reflowed.Push("")
+                cur := ""
+            } else {
+                ; All-caps header or indented line — flush current paragraph,
+                ; push the special line as its own paragraph.
+                isHeader := (RegExMatch(SubStr(line, 1, 2), "^[A-Z]{2}") > 0)
+                isIndented := (SubStr(line, 1, 1) = " " || SubStr(line, 1, 1) = "`t")
+                if (isHeader || isIndented) {
+                    if (cur != "")
+                        reflowed.Push(cur)
+                    reflowed.Push(line)
+                    cur := ""
+                } else {
+                    ; Normal line — strip existing leading "- " bullets before joining
+                    stripped := RegExReplace(line, "^[-•*]\s+", "")
+                    cur := (cur = "") ? stripped : cur . " " . stripped
+                }
+            }
         }
+        if (cur != "")
+            reflowed.Push(cur)
+        lines := reflowed
+    }
+
+    ; --- Hard wrap ---
+    if doHard {
+        for line in lines {
+            if (wrapCol > 0 && StrLen(line) > wrapCol) {
+                wrapped := WordWrap(line, wrapCol)
+                for wl in wrapped
+                    out.Push(wl)
+            } else {
+                out.Push(line)
+            }
+        }
+    } else {
+        out := lines
+    }
+
+    ; --- Add bullets ---
+    if doBullet {
+        bulleted := []
+        for line in out {
+            if (line = "") {
+                bulleted.Push(line)
+                continue
+            }
+            ; Check for all-caps header: first 2 chars both uppercase letters
+            isHeader := skipCaps && (RegExMatch(SubStr(line, 1, 2), "^[A-Z]{2}") > 0)
+            if isHeader {
+                bulleted.Push(line)
+            } else {
+                ; Strip any existing leading bullet chars (-, •, *, ·) before adding ours
+                clean := RegExReplace(line, "^[-•*·]\s+", "")
+                bulleted.Push(bulletCh . " " . clean)
+            }
+        }
+        out := bulleted
     }
 
     ; --- Indent / Dedent ---
-    if (spaces > 0) {
+    if (doIndent && spaces > 0) {
         pad := ""
         Loop spaces
             pad .= " "
@@ -1208,7 +1300,6 @@ Apply_WrapIndent(txt) {
             if isIndent {
                 final.Push(pad . line)
             } else {
-                ; Remove up to `spaces` leading spaces
                 removed := 0
                 while (removed < spaces && SubStr(line, 1, 1) = " ") {
                     line := SubStr(line, 2)
@@ -2223,17 +2314,25 @@ ShowHelp(tabIndex) {
 
         6,
 "Wrap / Indent Tab`n`n" .
-"Reformats line lengths and indentation.`n`n" .
-"WORD WRAP`n" .
-"  Hard-wraps the text at the specified column width.  " .
-"Long lines are broken at word boundaries so no line exceeds the column count.  " .
-"Set the column number in the 'Word wrap at column' field (default 80).`n`n" .
+"Reformats line lengths, indentation, and bullet style.`n`n" .
+"WRAP MODE`n" .
+"  None  — no wrapping applied (default); select to clear a previous wrap choice.`n" .
+"  Hard wrap  — breaks long lines at word boundaries so no line exceeds the column count.`n" .
+"  Paragraph reflow  — the reverse of hard wrap.  Joins consecutive soft-wrapped lines " .
+"back into full paragraphs.  Blank lines, ALL-CAPS headers, and indented lines are " .
+"treated as paragraph boundaries and are left on their own lines.`n`n" .
+"BULLETS`n" .
+"  Add bullet to each line  — prepends a bullet character and a space to every line.  " .
+"Any existing leading - / • / * is stripped first so you won't double-bullet.`n" .
+"  Bullet char  — the character used as the bullet (default •).  You can type any char.`n" .
+"  Skip if first 2 chars uppercase  — lines whose first two characters are both " .
+"uppercase letters are treated as section headers and receive no bullet.`n`n" .
 "INDENT / DEDENT`n" .
+"  None  — no indent/dedent applied (default); select to clear a previous choice.`n" .
 "  Indent  — adds N spaces to the beginning of every non-empty line`n" .
 "  Dedent  — removes up to N spaces from the beginning of every line`n" .
 "  'Spaces per level' sets how many spaces N is (default 4)`n`n" .
-"TIP: Apply Wrap first, then Indent in a second Apply step if you need both.  " .
-"Or use Swap to move the output back to Input and apply the second transform.",
+"TIP: Wrap and Indent/Dedent are independent — combine them freely in one Apply step.",
 
         7,
 "Counter Tab`n`n" .
