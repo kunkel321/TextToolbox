@@ -3,11 +3,13 @@
 TraySetIcon("shell32.dll", 75)
 
 ; ============================================================
-;  App: TextToolbox.ahk
-;  By:  Kunkel321 with Claude AI
-;  Version Date: 5-9-2026 
-;  Dual-pane text transformation utility based on Tidbit's same-name tool
-;  (See onboard help)
+;  App:             TextToolbox.ahk
+;  Version Date:    5-10-2026 
+;  By:              Kunkel321 with Claude AI
+;  GitHub:          https://github.com/kunkel321/TextToolbox
+;  AHK Forum:       https://www.autohotkey.com/boards/viewtopic.php?f=83&t=140654
+;  Description:     Dual-pane text transformation utility based on Tidbit's 
+;  same-name tool.  (Also see onboard help via F1 key.)
 ;  Settings persisted to ttSettings.ini (same folder as script).
 ; ============================================================
 
@@ -82,7 +84,7 @@ g.SetFont("s9", "Segoe UI")
 ; ---------- TAB AREA (top, fixed position) -------------------
 ; LbNav and Tabs sit at y=PAD and never move.
 ; Tab child controls are parented here and show/hide automatically — no repositioning needed.
-tabList := ["Case", "Sort", "Find/Replace", "Remove", "Wrap/Indent",
+tabList := ["Case", "Sort", "Find/Replace", "Remove", "Extract", "Wrap/Indent",
             "Counter", "Padding", "CSV View", "Compare", "N-Grams", "Stats"]
 
 LbNav := g.Add("ListBox",
@@ -101,6 +103,7 @@ BuildTab_Case()
 BuildTab_Sort()
 BuildTab_FindReplace()
 BuildTab_Remove()
+BuildTab_Extract()
 BuildTab_WrapIndent()
 BuildTab_Counter()
 BuildTab_Padding()
@@ -334,9 +337,57 @@ BuildTab_Remove() {
     global NumTrimR := g.Add("Edit", "x+6 yp-2 w40 h22 Number", "0")
 }
 
-BuildTab_WrapIndent() {
+BuildTab_Extract() {
     global Tabs, g, TX, TY
     Tabs.UseTab(5)
+    g.Add("Text", "x" (TX+8) " y" (TY+8), "Extract from text:")
+
+    ; Row 1 — what to extract (radio group)
+    global ExtR1 := g.Add("Radio", "x" (TX+8)   " y+10 Group", "Numbers")
+    global ExtR2 := g.Add("Radio", "x" (TX+100)  " yp",         "Email addresses")
+    global ExtR3 := g.Add("Radio", "x" (TX+240)  " yp",         "URLs")
+    global ExtR4 := g.Add("Radio", "x" (TX+8)   " y+6",         "Lines matching pattern:")
+    global ExtR5 := g.Add("Radio", "x" (TX+8)   " y+4",         "Custom pattern (regex):")
+
+    ; Pattern edit boxes — shown/enabled based on radio selection
+    global EditExtLinePattern := g.Add("Edit", "x" (TX+175) " yp-26 w250 h22", "")
+    global EditExtPattern     := g.Add("Edit", "x" (TX+175) " yp+26 w250 h22", "")
+
+    ; Row 2 — output options
+    g.Add("Text", "x" (TX+8) " y+12", "Output options:")
+    global ChkExtUnique   := g.Add("Checkbox", "x" (TX+110) " yp",    "Unique only")
+    global ChkExtPerLine  := g.Add("Checkbox", "x" (TX+210) " yp",    "One per line")
+    global ChkExtSemicolon := g.Add("Checkbox", "x" (TX+310) " yp",   "Semicolon-separated")
+
+    ; Wire radio changes to enable/disable the right edit boxes
+    for r in [ExtR1, ExtR2, ExtR3, ExtR4, ExtR5]
+        r.OnEvent("Click", UpdateExtractUI)
+
+    ; Set defaults
+    ExtR1.Value := 1
+    ChkExtPerLine.Value := 1
+    ChkExtPerLine.OnEvent("Click", UpdateExtractUI)
+    UpdateExtractUI()
+}
+
+UpdateExtractUI(*) {
+    global ExtR1, ExtR2, ExtR3, ExtR4, ExtR5
+    global EditExtLinePattern, EditExtPattern
+    global ChkExtSemicolon, ChkExtPerLine
+
+    lineMode    := ExtR4.Value
+    patternMode := ExtR5.Value
+    EditExtLinePattern.Enabled := lineMode
+    EditExtPattern.Enabled     := patternMode
+
+    ; Semicolon option only makes sense for email (or any single-line output)
+    ; Grey it out when One-per-line is checked
+    ChkExtSemicolon.Enabled := !ChkExtPerLine.Value
+}
+
+BuildTab_WrapIndent() {
+    global Tabs, g, TX, TY
+    Tabs.UseTab(6)
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Word wrap at column:")
     global NumWrapCol := g.Add("Edit", "x+6 yp-2 w50 h22 Number", "80")
     g.Add("Text",  "x" (TX+8) " y+10", "Indent / Dedent:")
@@ -348,7 +399,7 @@ BuildTab_WrapIndent() {
 
 BuildTab_Counter() {
     global Tabs, g, TX, TY
-    Tabs.UseTab(6)
+    Tabs.UseTab(7)
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Prepend a counter to each line.")
     g.Add("Text", "x" (TX+8) " y+12", "Start at:")
     global NumCtrStart := g.Add("Edit", "x+6 yp-2 w50 h22 Number", "1")
@@ -361,7 +412,7 @@ BuildTab_Counter() {
 
 BuildTab_Padding() {
     global Tabs, g, TX, TY
-    Tabs.UseTab(7)
+    Tabs.UseTab(8)
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Pad all lines to equal length:")
     global PadR1 := g.Add("Radio", "x" (TX+8) " y+8 Group", "Left-align  (pad right)")
     global PadR2 := g.Add("Radio", "x" (TX+8) " y+4",       "Right-align  (pad left)")
@@ -374,24 +425,26 @@ BuildTab_Padding() {
 
 BuildTab_CsvView() {
     global Tabs, g, TX, TY
-    Tabs.UseTab(8)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "CSV Viewer  (press F1 for tips)")
+    Tabs.UseTab(9)
+    g.Add("Text", "x" (TX+8) " y" (TY+8), "CSV Viewer  (press F1 for tips)    Remove col:")
+    global DdlCsvRemove := g.Add("DropDownList", "x+6 yp-3 w160 Choose1", ["(load CSV first)"])
+    global BtnCsvRemove := g.Add("Button", "x+6 yp w70 h22", "Remove")
     global LvCsv := g.Add("ListView",
-        "x" (TX+8) " y+6 w540 h150 Grid", ["(paste CSV below)"])
+        "x" (TX+8) " y+6 w540 h140 Grid", ["(paste CSV below)"])
     ; Enable column header drag-to-reorder (LVS_EX_HEADERDRAGDROP = 0x10)
     exStyle := SendMessage(0x1037, 0, 0, , "ahk_id " LvCsv.Hwnd)  ; LVM_GETEXTENDEDLISTVIEWSTYLE
     SendMessage(0x1036, 0, exStyle | 0x10, , "ahk_id " LvCsv.Hwnd) ; LVM_SETEXTENDEDLISTVIEWSTYLE
     global BtnCsvExport  := g.Add("Button",   "x" (TX+8) " y+6 w160 h22", "▼ Send to Output pane")
     global ChkCsvQuote   := g.Add("Checkbox", "x+8 yp+3",                  'Use double-quotes')
 
-    LvCsv.OnEvent("ColClick",    OnCsvColClick)
-    LvCsv.OnEvent("ContextMenu", OnCsvContextMenu)
+    LvCsv.OnEvent("ColClick", OnCsvColClick)
+    BtnCsvRemove.OnEvent("Click", OnCsvRemoveCol)
     BtnCsvExport.OnEvent("Click", OnCsvExport)
 }
 
 BuildTab_Compare() {
     global Tabs, g, TX, TY
-    Tabs.UseTab(9)
+    Tabs.UseTab(10)
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Original text in Input pane.  Comparison text:")
 
     ; Controls column (left of the edit box)
@@ -414,7 +467,7 @@ BuildTab_Compare() {
 
 BuildTab_Stats() {
     global Tabs, g, TX, TY
-    Tabs.UseTab(11)
+    Tabs.UseTab(12)
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Apply to count statistics for the Input text.")
     global LvStats := g.Add("ListView",
         "x" (TX+8) " y+8 w400 h175 Grid NoSort -Hdr", ["Statistic", "Value"])
@@ -438,7 +491,7 @@ BuildTab_Stats() {
 
 BuildTab_NGrams() {
     global Tabs, g, TX, TY
-    Tabs.UseTab(10)
+    Tabs.UseTab(11)
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Group size:")
     global DdlNgramSize := g.Add("DropDownList",
         "x" (TX+78) " yp-3 w80 Choose2",
@@ -666,15 +719,16 @@ OnApply(*) {
         case 2:  result := Apply_Sort(inputText)
         case 3:  result := Apply_FindReplace(inputText)
         case 4:  result := Apply_Remove(inputText)
-        case 5:  result := Apply_WrapIndent(inputText)
-        case 6:  result := Apply_Counter(inputText)
-        case 7:  result := Apply_Padding(inputText)
-        case 8:  Apply_CsvView(inputText) ; populates LV
+        case 5:  result := Apply_Extract(inputText)
+        case 6:  result := Apply_WrapIndent(inputText)
+        case 7:  result := Apply_Counter(inputText)
+        case 8:  result := Apply_Padding(inputText)
+        case 9:  Apply_CsvView(inputText)  ; populates LV
                  return
-        case 9:  result := Apply_Compare(inputText)
-        case 10: Apply_NGrams(inputText)  ; populates LV
+        case 10: result := Apply_Compare(inputText)
+        case 11: Apply_NGrams(inputText)   ; populates LV
                  return
-        case 11: Apply_Stats(inputText)   ; populates LV
+        case 12: Apply_Stats(inputText)    ; populates LV
                  return
         default: result := inputText
     }
@@ -1013,6 +1067,115 @@ Apply_Remove(txt) {
     return JoinLines(out)
 }
 
+Apply_Extract(txt) {
+    global ExtR1, ExtR2, ExtR3, ExtR4, ExtR5
+    global EditExtLinePattern, EditExtPattern
+    global ChkExtUnique, ChkExtPerLine, ChkExtSemicolon
+
+    doUnique    := ChkExtUnique.Value
+    doPerLine   := ChkExtPerLine.Value
+    doSemicolon := ChkExtSemicolon.Value
+
+    matches := []
+
+    if ExtR1.Value {
+        ; Numbers — integers, decimals, negatives
+        pos := 1
+        while RegExMatch(txt, "-?\d+(?:\.\d+)?", &m, pos) {
+            matches.Push(m[0])
+            pos := m.Pos + m.Len
+        }
+
+    } else if ExtR2.Value {
+        ; Email addresses
+        pos := 1
+        while RegExMatch(txt, "[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", &m, pos) {
+            matches.Push(m[0])
+            pos := m.Pos + m.Len
+        }
+
+    } else if ExtR3.Value {
+        ; URLs
+        pos := 1
+        while RegExMatch(txt, 'i)\b(?:https?://|www\.)[^\s"<>]+(?<![.,;:!?])', &m, pos) {
+            matches.Push(m[0])
+            pos := m.Pos + m.Len
+        }
+
+    } else if ExtR4.Value {
+        ; Lines matching pattern
+        pat := Trim(EditExtLinePattern.Value)
+        if pat = "" {
+            ToolTip("Enter a pattern to match.", , , 3)
+            SetTimer(() => ToolTip("", , , 3), -1800)
+            return ""
+        }
+        Loop Parse, txt, "`n", "`r" {
+            try {
+                if RegExMatch(A_LoopField, pat)
+                    matches.Push(A_LoopField)
+            } catch {
+                ToolTip("Invalid regex pattern.", , , 3)
+                SetTimer(() => ToolTip("", , , 3), -1800)
+                return ""
+            }
+        }
+
+    } else if ExtR5.Value {
+        ; Custom regex — extract captured group 1 (or whole match if no group)
+        pat := Trim(EditExtPattern.Value)
+        if pat = "" {
+            ToolTip("Enter a regex pattern.", , , 3)
+            SetTimer(() => ToolTip("", , , 3), -1800)
+            return ""
+        }
+        pos := 1
+        while RegExMatch(txt, pat, &m, pos) {
+            try {
+                val := (m.Count >= 1) ? m[1] : m[0]
+                matches.Push(val)
+            } catch {
+                matches.Push(m[0])
+            }
+            newPos := m.Pos + m.Len
+            if newPos <= pos  ; safety — avoid infinite loop on zero-length match
+                break
+            pos := newPos
+        }
+    }
+
+    ; Deduplicate (preserving order)
+    if doUnique {
+        seen := Map()
+        deduped := []
+        for v in matches {
+            key := StrLower(v)
+            if !seen.Has(key) {
+                seen[key] := true
+                deduped.Push(v)
+            }
+        }
+        matches := deduped
+    }
+
+    if matches.Length = 0
+        return ""
+
+    ; Format output
+    if doSemicolon && !doPerLine
+        return JoinArray(matches, "; ")
+
+    return JoinLines(matches)
+}
+
+; Join an array with an arbitrary separator
+JoinArray(arr, sep) {
+    out := ""
+    for i, v in arr
+        out .= (i = 1 ? "" : sep) . v
+    return out
+}
+
 Apply_WrapIndent(txt) {
     global NumWrapCol, IndentRG, NumIndent
 
@@ -1209,6 +1372,8 @@ Apply_CsvView(txt) {
     ; Auto-size columns (cap at 200px)
     Loop headers.Length
         LvCsv.ModifyCol(A_Index, "AutoHdr")
+
+    PopulateCsvRemoveDdl()
 }
 
 ; Parse one RFC-4180 CSV line into an Array of field strings
@@ -1359,39 +1524,28 @@ BubbleSort(rows, col, asc) {
     }
 }
 
-; Right-click on ListView header → offer to remove that column
-OnCsvContextMenu(ctrl, item, isRightClick, x, y) {
-    if !isRightClick
+; Populate the Remove Column DDL with current header names
+PopulateCsvRemoveDdl() {
+    global DdlCsvRemove, CsvHeaders
+    DdlCsvRemove.Delete()
+    if CsvHeaders.Length = 0 {
+        DdlCsvRemove.Add(["(no columns)"])
+        DdlCsvRemove.Choose(1)
         return
-    ; Determine which column header was clicked by hit-testing
-    ; Convert screen coords to client coords
-    pt := Buffer(8)
-    NumPut("int", x, pt, 0), NumPut("int", y, pt, 4)
-    DllCall("ScreenToClient", "Ptr", ctrl.Hwnd, "Ptr", pt)
-    cx := NumGet(pt, 0, "int"), cy := NumGet(pt, 4, "int")
+    }
+    for h in CsvHeaders
+        DdlCsvRemove.Add([h])
+    DdlCsvRemove.Choose(1)
+}
 
-    ; Get the header control
-    hHeader := SendMessage(0x101F, 0, 0, , "ahk_id " ctrl.Hwnd)   ; LVM_GETHEADER
-    if !hHeader
+; Remove the column selected in DdlCsvRemove
+OnCsvRemoveCol(*) {
+    global LvCsv, DdlCsvRemove, CsvHeaders
+    colIdx := DdlCsvRemove.Value
+    if (colIdx < 1 || colIdx > CsvHeaders.Length)
         return
-
-    ; Hit-test the header
-    hti := Buffer(16, 0)
-    NumPut("int", cx, hti, 0), NumPut("int", cy, hti, 4)
-    hitResult := SendMessage(0x0006, 0, hti.Ptr, , "ahk_id " hHeader)  ; HDM_HITTEST (return unused but needed to populate hti)
-    hitCol := NumGet(hti, 8, "int")
-
-    if (hitCol < 0)   ; didn't hit a header
-        return
-
-    ; Get column name from CsvHeaders (0-based hitCol → 1-based index)
-    global CsvHeaders
-    colName := (hitCol + 1 <= CsvHeaders.Length) ? CsvHeaders[hitCol + 1] : "#" (hitCol + 1)
-
-    mnu := Menu()
-    mnu.Add("Remove column: " colName,
-            (*) => CsvRemoveColumn(ctrl, hitCol + 1))
-    mnu.Show()
+    CsvRemoveColumn(LvCsv, colIdx)
+    PopulateCsvRemoveDdl()
 }
 
 ; Remove a column from the ListView by index (1-based)
@@ -2042,6 +2196,32 @@ ShowHelp(tabIndex) {
 "TIP: Set LEFT=0 and RIGHT=0 to skip char-trimming while still using the checkboxes above.",
 
         5,
+"Extract Tab`n`n" .
+"Pulls specific content out of the Input text and writes only the matches to Output.`n`n" .
+"MODES`n" .
+"  Numbers              — extracts integers, decimals, and negative numbers`n" .
+"                         Example: 'Score = 85- Average' → '85'`n" .
+"  Email addresses      — extracts anything matching an email pattern`n" .
+"  URLs                 — extracts http/https URLs`n" .
+"  Lines matching       — keeps only lines that contain the given pattern (like grep)`n" .
+"                         Plain text or regex; e.g. 'Score' or '\d{2,3}'`n" .
+"  Custom pattern       — extracts regex matches; if your pattern has a capture`n" .
+"                         group (…) only the captured portion is returned`n`n" .
+"OUTPUT OPTIONS`n" .
+"  Unique only          — removes duplicate matches (case-insensitive)`n" .
+"  One per line         — each match on its own line (default)`n" .
+"  Semicolon-separated  — joins all matches with '; ' on a single line`n" .
+"                         (useful for pasting email lists into Outlook)`n" .
+"                         Only available when 'One per line' is unchecked`n`n" .
+"TIPS`n" .
+"  For test scores like 'SS = 85- Average', Numbers mode extracts all numeric`n" .
+"  values.  If a line has multiple numbers (e.g. 'Item 3: score 85'), use`n" .
+"  'Lines matching' with a pattern like '\d{2,3}' to filter first, then`n" .
+"  run Numbers mode in a second pass.`n" .
+"  Custom pattern with a capture group: pattern '\bScore\s*=\s*(\d+)' would`n" .
+"  extract only the digits after 'Score ='.",
+
+        6,
 "Wrap / Indent Tab`n`n" .
 "Reformats line lengths and indentation.`n`n" .
 "WORD WRAP`n" .
@@ -2055,7 +2235,7 @@ ShowHelp(tabIndex) {
 "TIP: Apply Wrap first, then Indent in a second Apply step if you need both.  " .
 "Or use Swap to move the output back to Input and apply the second transform.",
 
-        6,
+        7,
 "Counter Tab`n`n" .
 "Prepends an incrementing number to each line.`n`n" .
 "OPTIONS`n" .
@@ -2069,7 +2249,7 @@ ShowHelp(tabIndex) {
 "  Start=0, Step=10, Sep=': '  →  0: Alpha  /  10: Beta  /  20: Gamma`n" .
 "  With right-align on a 12-line list: ' 1. Alpha' … '12. Omega'",
 
-        7,
+        8,
 "Padding Tab`n`n" .
 "Pads all lines to the same length so they form a neat rectangular block.  " .
 "Useful for monospace output, columns, or ASCII art.`n`n" .
@@ -2083,7 +2263,7 @@ ShowHelp(tabIndex) {
 "TIP: For best results use a fixed-width (monospace) font when viewing " .
 "the output, such as Courier New or Consolas.",
 
-        8,
+        9,
 "CSV View Tab`n`n" .
 "Parses CSV (comma-separated values) text from the Input pane and " .
 "displays it as a sortable, interactive table.`n`n" .
@@ -2094,7 +2274,7 @@ ShowHelp(tabIndex) {
 "INTERACTIVE FEATURES`n" .
 "  Click a column header  — sort ascending; click again for descending`n" .
 "  Drag a column header   — reorder columns`n" .
-"  Right-click a header   — remove that column from the view`n`n" .
+"  Remove col dropdown    — select a column name then click Remove to delete it`n`n" .
 "EXPORT`n" .
 "  '▼ Send to Output pane' exports the current table (respecting column " .
 "order and removed columns) back to CSV text in the Output pane.`n" .
@@ -2105,7 +2285,7 @@ ShowHelp(tabIndex) {
 "combination can corrupt column display.  Workaround: reorder → export " .
 "→ Swap → Apply → sort → export again.",
 
-        9,
+        10,
 "Compare Tab`n`n" .
 "Compares two sets of lines and returns only the lines matching a chosen " .
 "relationship.  The Input pane holds the 'Original' text; type or paste " .
@@ -2120,7 +2300,7 @@ ShowHelp(tabIndex) {
 "TIP: Comparison is line-by-line and case-sensitive.  Use the Remove tab " .
 "with 'Trim whitespace' first if your lines may have stray spaces.",
 
-        10,
+        11,
 "N-Grams Tab`n`n" .
 "Counts how often words or multi-word phrases appear in the Input text " .
 "and displays the results in a sortable table.`n`n" .
@@ -2144,7 +2324,7 @@ ShowHelp(tabIndex) {
 "  N=2 (bigrams) often reveals characteristic phrases and collocations.`n" .
 "  Very large texts with high N values may take a moment to compute.",
 
-        11,
+        12,
 "Stats Tab`n`n" .
 "Counts various statistics about the text in the Input pane.  " .
 "Click Apply to analyse and populate the table.`n`n" .
@@ -2170,7 +2350,7 @@ ShowHelp(tabIndex) {
 "table.  Use the N-Grams tab if you want exportable word/phrase frequency data."
     )
 
-    tabNames := ["Case", "Sort", "Find/Replace", "Remove", "Wrap/Indent",
+    tabNames := ["Case", "Sort", "Find/Replace", "Remove", "Extract", "Wrap/Indent",
                  "Counter", "Padding", "CSV View", "Compare", "N-Grams", "Stats"]
 
     if (tabIndex = 0)
