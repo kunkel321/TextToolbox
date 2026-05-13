@@ -4,7 +4,7 @@ TraySetIcon("shell32.dll", 75)
 
 ; ============================================================
 ;  App:             TextToolbox.ahk
-;  Version Date:    5-10-2026 
+;  Version Date:    5-13-2026 
 ;  By:              Kunkel321 with Claude AI
 ;  GitHub:          https://github.com/kunkel321/TextToolbox
 ;  AHK Forum:       https://www.autohotkey.com/boards/viewtopic.php?f=83&t=140654
@@ -21,6 +21,7 @@ UNDO_MAX     := 20     ; max undo/redo levels
 HISTORY_MAX  := 10   ; max items remembered per combo history
 FindHistory  := []   ; Array of find strings, index 1 = most recent
 ReplHistory  := []   ; Array of replace strings, index 1 = most recent
+FaveNames    := []   ; Array of favorite titles, in INI order
 
 ; ---------- User option -------------------------------------
 ; Set to true to automatically paste clipboard contents into
@@ -64,12 +65,15 @@ STRIP_W  := 24    ; width of the narrow vertical strip in vert mode
 ; ============================================================
 ;  LOAD SETTINGS
 ; ============================================================
+MAX_WIN_H := 760   ; hard ceiling — prevents DPI-scaling creep on repeated open/close
+
 LoadSettings() {
-    global WIN_W, WIN_H, SplitH, PANE_H, PAD, TAB_H, TOOL_H
+    global WIN_W, WIN_H, SplitH, PANE_H, PAD, TAB_H, TOOL_H, MAX_WIN_H
     WIN_W  := Integer(IniRead(IniFile, "Window", "W",      WIN_W))
     WIN_H  := Integer(IniRead(IniFile, "Window", "H",      WIN_H))
-    PANE_H := Integer(IniRead(IniFile, "Window", "PaneH",  PANE_H))
     SplitH := IniRead(IniFile, "Window", "SplitH", "1") = "1"
+    ; Clamp after load — guards against DPI rounding that inflated a saved value
+    WIN_H  := Min(WIN_H,  MAX_WIN_H)
 }
 
 ; ============================================================
@@ -186,6 +190,7 @@ InitialLayout() {
     g.GetClientPos(, , &cW, &cH)
     LayoutPanes(cW, cH)
     LoadHistory()
+    LoadFavorites()
     if (AUTO_PASTE_CLIPBOARD && A_Clipboard != "")
         EditIn.Value := A_Clipboard
 }
@@ -238,6 +243,14 @@ LayoutPanes(W, H) {
 
     ; LbNav height tracks TAB_H (fixed, but resize it in case TAB_H ever changes)
     LbNav.Move(PAD, PAD, LB_W, TAB_H)
+
+    ; Resize CSV ListView width when that tab is visible — only pays cost when needed
+    if (Tabs.Value = 9) {
+        global LvCsv, TX
+        lvW := W - TX - PAD - 16   ; fill tab content area, small right margin
+        LvCsv.GetPos(, &lvY, , &lvH)
+        LvCsv.Move(TX+8, lvY, lvW, lvH)
+    }
 }
 
 UpdateSplitBtn() {
@@ -281,107 +294,272 @@ BuildTab_Case() {
 BuildTab_Sort() {
     global Tabs, g, TX, TY
     Tabs.UseTab(2)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "Sort lines:")
-    global SortR1  := g.Add("Radio", "x" (TX+8) " y+8 Group", "A → Z")
-    global SortR2  := g.Add("Radio", "x" (TX+8) " y+4",       "Z → A")
-    global SortR3  := g.Add("Radio", "x" (TX+8) " y+4",       "Random")
-    global SortR4  := g.Add("Radio", "x" (TX+8) " y+4",       "Length (short→long)")
-    global SortR5  := g.Add("Radio", "x" (TX+8) " y+4",       "Length (long→short)")
-    global SortR6  := g.Add("Radio", "x" (TX+8) " y+4",       "Numeric (natural sort)")
-    global ChkSortDupe := g.Add("Checkbox", "x" (TX+8) " y+10", "Remove duplicate lines")
-    global ChkSortTrim := g.Add("Checkbox", "x" (TX+8) " y+4",  "Trim whitespace before sorting")
-    g.Add("Text", "x" (TX+8) " y+10", "Sort key:")
-    global DdlSortKey := g.Add("DropDownList",
-        "x" (TX+62) " yp-3 w148 Choose1",
+
+    c1 := TX+8        ; col 1 x  — Apply to
+    c2 := TX+180      ; col 2 x  — Operation  (shifted right to avoid label overlap)
+    c3 := TX+335      ; col 3 x  — Options
+    yTop := TY+8
+
+    ; ---- COL 1: Apply to ----
+    g.Add("Text", "x" c1 " y" yTop, "Apply to:")
+    global ScopeR1 := g.Add("Radio", "x" c1 " y+6 Group", "Lines")
+    global ScopeR2 := g.Add("Radio", "x" c1 " y+4",       "Paragraphs")
+    global ScopeR3 := g.Add("Radio", "x" c1 " y+4",       "Words  (within each line)")
+    global ScopeR4 := g.Add("Radio", "x" c1 " y+4",       "Letters  (within each word)")
+    global ScopeR5 := g.Add("Radio", "x" c1 " y+4",       "Words  (overall, ignore lines)")
+    global ScopeR6 := g.Add("Radio", "x" c1 " y+4",       "Letters  (overall, ignore words)")
+
+    ; ---- COL 2: Operation ----
+    g.Add("Text", "x" c2 " y" yTop, "Operation:")
+    global SortR1 := g.Add("Radio", "x" c2 " y+6 Group", "A → Z")
+    global SortR2 := g.Add("Radio", "x" c2 " y+4",       "Z → A")
+    global SortR3 := g.Add("Radio", "x" c2 " y+4",       "Random")
+    global SortR4 := g.Add("Radio", "x" c2 " y+4",       "Length  (short→long)")
+    global SortR5 := g.Add("Radio", "x" c2 " y+4",       "Length  (long→short)")
+    global SortR6 := g.Add("Radio", "x" c2 " y+4",       "Numeric")
+    global SortR7 := g.Add("Radio", "x" c2 " y+4",       "Reverse")
+    global SortR8 := g.Add("Radio", "x" c2 " y+4",       "Typoglycemia")
+
+    ; ---- COL 3: Options ----
+    g.Add("Text", "x" c3 " y" yTop, "Options:")
+    global ChkSortDupe := g.Add("Checkbox", "x" c3 " y+6",  "Remove duplicates")
+    global ChkSortTrim := g.Add("Checkbox", "x" c3 " y+4",  "Trim whitespace")
+
+    ; Sort key (Lines/Paragraphs only)
+    g.Add("Text", "x" c3 " y+10", "Sort key:")
+    global DdlSortKey    := g.Add("DropDownList", "x" c3 " y+4 w148 Choose1",
         ["Whole line", "Word 1", "Word 2", "Last word", "After delimiter"])
-    global EditSortDelim := g.Add("Edit", "x+8 yp w28 h22", "-")
+    global EditSortDelim := g.Add("Edit", "x" c3 " y+4 w28 h22", "-")
     global TxtSortDelim  := g.Add("Text", "x+4 yp+3", "delim")
-    ; Enable/disable delimiter box based on DDL selection
-    DdlSortKey.OnEvent("Change", (*) => UpdateSortKeyUI())
-    UpdateSortKeyUI()
+
+    ; Reverse-letters sub-options (enabled only when scope=Letters/Letters-overall + op=Reverse)
+    g.Add("Text", "x" c3 " y+14", "Reverse letters:")
+    global RevR1 := g.Add("Radio", "x" c3 " y+4 Group", "Per word")
+    global RevR2 := g.Add("Radio", "x" c3 " y+4",       "Whole line / text")
+
+    ; Defaults
+    ScopeR1.Value := 1
+    SortR1.Value  := 1
+    RevR1.Value   := 1
+
+    ; Wire change events
+    for r in [ScopeR1, ScopeR2, ScopeR3, ScopeR4, ScopeR5, ScopeR6]
+        r.OnEvent("Click", UpdateSortUI)
+    for r in [SortR1, SortR2, SortR3, SortR4, SortR5, SortR6, SortR7, SortR8]
+        r.OnEvent("Click", UpdateSortUI)
+    DdlSortKey.OnEvent("Change", UpdateSortUI)
+    UpdateSortUI()
 }
 
-UpdateSortKeyUI() {
-    global DdlSortKey, EditSortDelim, TxtSortDelim
-    isDelim := (DdlSortKey.Value = 5)   ; "After delimiter" is item 5
-    EditSortDelim.Enabled := isDelim
-    TxtSortDelim.Enabled  := isDelim
+; Enable/disable Sort tab controls based on current scope + operation selection
+UpdateSortUI(*) {
+    global ScopeR1, ScopeR2, ScopeR3, ScopeR4, ScopeR5, ScopeR6
+    global SortR1, SortR2, SortR3, SortR4, SortR5, SortR6, SortR7, SortR8
+    global ChkSortDupe, ChkSortTrim, DdlSortKey, EditSortDelim, TxtSortDelim
+    global RevR1, RevR2
+
+    ; scope: 1=Lines 2=Paragraphs 3=Words/line 4=Letters/word 5=Words/overall 6=Letters/overall
+    scope := ScopeR1.Value ? 1 : ScopeR2.Value ? 2 : ScopeR3.Value ? 3
+           : ScopeR4.Value ? 4 : ScopeR5.Value ? 5 : 6
+    op := 1
+    for i, r in [SortR1,SortR2,SortR3,SortR4,SortR5,SortR6,SortR7,SortR8]
+        if r.Value {
+            op := i
+            break
+        }
+
+    isLineScope  := (scope = 1 || scope = 2)
+    isLetters    := (scope = 4 || scope = 6)
+    isWordsScope := (scope = 3 || scope = 5)
+    isOverall    := (scope = 5 || scope = 6)
+    isReverse    := (op = 7)
+    isTypo       := (op = 8)
+
+    ; Length: not for letters; Numeric: lines/paras only; Typoglycemia: words scopes only
+    SortR4.Enabled := !isLetters
+    SortR5.Enabled := !isLetters
+    SortR6.Enabled := isLineScope
+    SortR8.Enabled := isWordsScope   ; Typoglycemia only on word scopes
+
+    ; If selected op became disabled, fall back gracefully
+    if !SortR4.Enabled && SortR4.Value
+        SortR7.Value := 1
+    if !SortR5.Enabled && SortR5.Value
+        SortR7.Value := 1
+    if !SortR6.Enabled && SortR6.Value
+        SortR7.Value := 1
+    if !SortR8.Enabled && SortR8.Value
+        SortR7.Value := 1
+
+    ; Duplicates + trim + sort key: lines/paragraphs only, not when Reverse/Typoglycemia
+    ChkSortDupe.Enabled  := isLineScope
+    ChkSortTrim.Enabled  := isLineScope
+    DdlSortKey.Enabled   := isLineScope && !isReverse && !isTypo
+    isDelim := (DdlSortKey.Value = 5)
+    EditSortDelim.Enabled := isLineScope && !isReverse && !isTypo && isDelim
+    TxtSortDelim.Enabled  := isLineScope && !isReverse && !isTypo && isDelim
+
+    ; Reverse sub-options: active when letters scope + Reverse op
+    RevR1.Enabled := isLetters && isReverse
+    RevR2.Enabled := isLetters && isReverse
+}
+
+UpdateSortKeyUI() {   ; legacy alias — no longer called but kept to avoid errors
+    UpdateSortUI()
 }
 
 BuildTab_FindReplace() {
     global Tabs, g, TX, TY
     Tabs.UseTab(3)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "Find:")
+
+    ; ── Favorites row ────────────────────────────────────────────────────
+    g.Add("Text", "x" (TX+8) " y" (TY+8), "Favorites:")
+    global CboFave   := g.Add("ComboBox", "x" (TX+72) " yp-3 w290", [])
+    global BtnFavSave := g.Add("Button",  "x+8 yp w80 h22", "Save fave")
+    global BtnFavDel  := g.Add("Button",  "x+6 yp w80 h22", "Delete fave")
+
+    ; ── Find / Replace ───────────────────────────────────────────────────
+    g.Add("Text", "x" (TX+8) " y+10", "Find:")
     global CboFind := g.Add("ComboBox", "x" (TX+8) " y+4 w380", [])
     g.Add("Text", "x" (TX+8) " y+8", "Replace with:")
     global CboRepl := g.Add("ComboBox", "x" (TX+8) " y+4 w380", [])
     global ChkFRCase  := g.Add("Checkbox", "x" (TX+8) " y+10", "Case sensitive")
     global ChkFRRegex := g.Add("Checkbox", "x" (TX+8) " y+4",  "Use regex")
     global ChkFRAll   := g.Add("Checkbox", "x" (TX+8) " y+4 Checked", "Replace all occurrences")
+
+    ; ── Events ───────────────────────────────────────────────────────────
+    CboFave.OnEvent("Change", OnFaveChange)
+    BtnFavSave.OnEvent("Click", OnFaveSave)
+    BtnFavDel.OnEvent("Click",  OnFaveDelete)
 }
 
 BuildTab_Remove() {
     global Tabs, g, TX, TY
     Tabs.UseTab(4)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "Remove from text:")
-    global ChkRmBlank    := g.Add("Checkbox", "x" (TX+8) " y+8",  "Blank / empty lines")
-    global ChkRmDupe     := g.Add("Checkbox", "x" (TX+8) " y+4",  "Duplicate lines")
-    global ChkRmLead     := g.Add("Checkbox", "x" (TX+8) " y+4",  "Leading whitespace (per line)")
-    global ChkRmTrail    := g.Add("Checkbox", "x" (TX+8) " y+4",  "Trailing whitespace (per line)")
-    global ChkRmHTML     := g.Add("Checkbox", "x" (TX+8) " y+4",  "HTML tags  <…>")
-    global ChkRmBBCode   := g.Add("Checkbox", "x" (TX+8) " y+4",  "BBCode tags  […]")
-    global ChkRmNonASCII := g.Add("Checkbox", "x" (TX+8) " y+4",  "Non-ASCII characters")
-    g.Add("Text", "x" (TX+8) " y+10", "Trim characters from LEFT:")
+
+    c1 := TX+8
+    c2 := TX+225
+
+    ; ---- LEFT COLUMN ----
+    g.Add("Text", "x" c1 " y" (TY+8), "Remove from text:")
+    global ChkRmBlank    := g.Add("Checkbox", "x" c1 " y+8",  "Blank / empty lines")
+    global ChkRmDupe     := g.Add("Checkbox", "x" c1 " y+4",  "Duplicate lines")
+    global ChkRmLead     := g.Add("Checkbox", "x" c1 " y+4",  "Leading whitespace (per line)")
+    global ChkRmTrail    := g.Add("Checkbox", "x" c1 " y+4",  "Trailing whitespace (per line)")
+    global ChkRmHTML     := g.Add("Checkbox", "x" c1 " y+4",  "HTML tags  <…>")
+    global ChkRmBBCode   := g.Add("Checkbox", "x" c1 " y+4",  "BBCode tags  […]")
+    global ChkRmNonASCII := g.Add("Checkbox", "x" c1 " y+4",  "Non-ASCII characters")
+    g.Add("Text", "x" c1 " y+10", "Trim N chars from LEFT:")
     global NumTrimL := g.Add("Edit", "x+6 yp-2 w40 h22 Number", "0")
     g.Add("Text", "x+8 yp+2", "RIGHT:")
     global NumTrimR := g.Add("Edit", "x+6 yp-2 w40 h22 Number", "0")
+
+    ; ---- RIGHT COLUMN ----
+    ; Everything before/after a delimiter
+    g.Add("Text", "x" c2 " y" (TY+8), "Remove everything:")
+    global DdlRmBeforeAfter := g.Add("DropDownList", "x" c2 " y+6 w80 Choose1", ["before", "after"])
+    g.Add("Text", "x+6 yp+3", "delimiter:")
+    global EditRmDelim1 := g.Add("Edit", "x+6 yp-3 w60 h22", "")
+    global ChkRmKeepDelim1 := g.Add("Checkbox", "x" c2 " y+6", "Keep delimiter")
+
+    ; Everything between two delimiters
+    g.Add("Text", "x" c2 " y+16", "Remove everything between:")
+    g.Add("Text", "x" c2 " y+6", "Start:")
+    global EditRmDelim2 := g.Add("Edit", "x+6 yp-3 w60 h22", "")
+    g.Add("Text", "x+8 yp+3", "End:")
+    global EditRmDelim3 := g.Add("Edit", "x+6 yp-3 w60 h22", "")
+    global ChkRmKeepDelim2 := g.Add("Checkbox", "x" c2 " y+6", "Keep start")
+    global ChkRmKeepDelim3 := g.Add("Checkbox", "x+10 yp",     "Keep end")
 }
 
 BuildTab_Extract() {
     global Tabs, g, TX, TY
     Tabs.UseTab(5)
+
+    ; ── Column layout constants ──────────────────────────────────────────
+    ; All 6 radios are added consecutively (no other controls between them)
+    ; so Windows treats them as one radio group.  Edit boxes are placed
+    ; afterward using the actual Y coords captured from each radio via GetPos().
+    editX  := TX + 185   ; left edge of all right-column edit boxes
+    editW  := 270        ; default edit width (rows 2 & 3)
+    delW   := 90         ; delimiter edit width (row 4)
+    editH  := 22         ; standard edit height
+    rowGap := 8          ; vertical gap between radio rows 2-4
+
+    ; ── Header ───────────────────────────────────────────────────────────
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Extract from text:")
 
-    ; Row 1 — what to extract (radio group)
-    global ExtR1 := g.Add("Radio", "x" (TX+8)   " y+10 Group", "Numbers")
-    global ExtR2 := g.Add("Radio", "x" (TX+100)  " yp",         "Email addresses")
-    global ExtR3 := g.Add("Radio", "x" (TX+240)  " yp",         "URLs")
-    global ExtR4 := g.Add("Radio", "x" (TX+8)   " y+6",         "Lines matching pattern:")
-    global ExtR5 := g.Add("Radio", "x" (TX+8)   " y+4",         "Custom pattern (regex):")
+    ; ── All 6 radios in one unbroken sequence ────────────────────────────
+    ; Row 1: three inline radios on same y (Group starts the group)
+    global ExtR1 := g.Add("Radio", "x" (TX+8)   " y+8 Group", "Numbers")
+    global ExtR2 := g.Add("Radio", "x" (TX+100)  " yp",        "Email addresses")
+    global ExtR3 := g.Add("Radio", "x" (TX+250)  " yp",        "URLs")
 
-    ; Pattern edit boxes — shown/enabled based on radio selection
-    global EditExtLinePattern := g.Add("Edit", "x" (TX+175) " yp-26 w250 h22", "")
-    global EditExtPattern     := g.Add("Edit", "x" (TX+175) " yp+26 w250 h22", "")
+    ; Rows 2-4: each radio on its own line, continuing the same group
+    global ExtR4 := g.Add("Radio", "x" (TX+8) " y+8", "Lines matching pattern:")
+    global ExtR5 := g.Add("Radio", "x" (TX+8) " y+8", "Custom pattern (regex):")
+    global ExtR6 := g.Add("Radio", "x" (TX+8) " y+8", "Between delimiters:")
 
-    ; Row 2 — output options
-    g.Add("Text", "x" (TX+8) " y+12", "Output options:")
-    global ChkExtUnique   := g.Add("Checkbox", "x" (TX+110) " yp",    "Unique only")
-    global ChkExtPerLine  := g.Add("Checkbox", "x" (TX+210) " yp",    "One per line")
-    global ChkExtSemicolon := g.Add("Checkbox", "x" (TX+310) " yp",   "Semicolon-separated")
+    ; ── Capture the Y position of each radio row ─────────────────────────
+    ; (GetPos fills by reference; we only need &ry)
+    ExtR4.GetPos(, &r4y), ExtR5.GetPos(, &r5y), ExtR6.GetPos(, &r6y)
 
-    ; Wire radio changes to enable/disable the right edit boxes
-    for r in [ExtR1, ExtR2, ExtR3, ExtR4, ExtR5]
+    ; ── Right-column edit boxes, y-aligned to their radio ────────────────
+    ; Row 2 edit (Lines matching pattern)
+    global EditExtLinePattern := g.Add("Edit", "x" editX " y" (r4y-2) " w" editW " h" editH, "")
+
+    ; Row 3 edit (Custom regex)
+    global EditExtPattern := g.Add("Edit", "x" editX " y" (r5y-2) " w" editW " h" editH, "")
+
+    ; Row 4 edits (Between delimiters — two boxes + "and" label)
+    global EditExtDel1 := g.Add("Edit", "x" editX " y" (r6y-2) " w" delW " h" editH, "")
+    g.Add("Text",  "x+6 yp+3", "and")
+    global EditExtDel2 := g.Add("Edit", "x+6 yp-3 w" delW " h" editH, "")
+
+    ; ── Row 5: occurrence spinner + keep-delimiter checkboxes ────────────
+    ; Position below ExtR6 (the last radio)
+    ExtR6.GetPos(, &r6y2)
+    row5y := r6y2 + editH + 6
+    g.Add("Text",     "x" (TX+8)   " y" row5y,       "Occurrence:")
+    global NumExtNth := g.Add("Edit", "x+6 yp-2 w40 h22 Number", "1")
+    g.Add("Text",     "x+4 yp+2",                     "(1 = first,  0 = all)")
+    global ChkExtKeepDel1 := g.Add("Checkbox", "x" (TX+300) " yp-2", "Keep start delim")
+    global ChkExtKeepDel2 := g.Add("Checkbox", "x+12 yp",             "Keep end delim")
+
+    ; ── Row 6: output options ─────────────────────────────────────────────
+    g.Add("Text", "x" (TX+8) " y+10", "Output options:")
+    global ChkExtUnique    := g.Add("Checkbox", "x" (TX+110) " yp",  "Unique only")
+    global ChkExtPerLine   := g.Add("Checkbox", "x" (TX+210) " yp",  "One per line")
+    global ChkExtSemicolon := g.Add("Checkbox", "x" (TX+340) " yp",  "Semicolon-separated")
+
+    ; ── Wire events & set defaults ────────────────────────────────────────
+    for r in [ExtR1, ExtR2, ExtR3, ExtR4, ExtR5, ExtR6]
         r.OnEvent("Click", UpdateExtractUI)
 
-    ; Set defaults
-    ExtR1.Value := 1
+    ExtR1.Value       := 1
     ChkExtPerLine.Value := 1
     ChkExtPerLine.OnEvent("Click", UpdateExtractUI)
     UpdateExtractUI()
 }
 
 UpdateExtractUI(*) {
-    global ExtR1, ExtR2, ExtR3, ExtR4, ExtR5
+    global ExtR1, ExtR2, ExtR3, ExtR4, ExtR5, ExtR6
     global EditExtLinePattern, EditExtPattern
+    global EditExtDel1, EditExtDel2, NumExtNth, ChkExtKeepDel1, ChkExtKeepDel2
     global ChkExtSemicolon, ChkExtPerLine
 
     lineMode    := ExtR4.Value
     patternMode := ExtR5.Value
+    betweenMode := ExtR6.Value
+
     EditExtLinePattern.Enabled := lineMode
     EditExtPattern.Enabled     := patternMode
+    EditExtDel1.Enabled        := betweenMode
+    EditExtDel2.Enabled        := betweenMode
+    NumExtNth.Enabled          := betweenMode
+    ChkExtKeepDel1.Enabled     := betweenMode
+    ChkExtKeepDel2.Enabled     := betweenMode
 
-    ; Semicolon option only makes sense for email (or any single-line output)
-    ; Grey it out when One-per-line is checked
     ChkExtSemicolon.Enabled := !ChkExtPerLine.Value
 }
 
@@ -404,7 +582,6 @@ BuildTab_WrapIndent() {
 
     ; Bullets
     g.Add("Text",  "x" (TX+8) " y+24", "Bullets:")
-    ; g.Add("Text",  "x" (TX+8) " y+10", "Bullets:")
     global ChkBullet   := g.Add("Checkbox", "x" (TX+8) " y+4", "Add bullet to each line   Char:")
     global EditBullet  := g.Add("Edit",     "x+6 yp-2 w30 h22", Chr(0x2022))   ; •
     global ChkSkipCaps := g.Add("Checkbox", "x" (TX+8) " y+4", "Skip if first 2 chars uppercase")
@@ -449,20 +626,23 @@ BuildTab_Padding() {
 BuildTab_CsvView() {
     global Tabs, g, TX, TY
     Tabs.UseTab(9)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "CSV Viewer  (press F1 for tips)    Remove col:")
+    g.Add("Text", "x" (TX+8) " y" (TY+8), "CSV Viewer    Remove col:")
     global DdlCsvRemove := g.Add("DropDownList", "x+6 yp-3 w160 Choose1", ["(load CSV first)"])
     global BtnCsvRemove := g.Add("Button", "x+6 yp w70 h22", "Remove")
+    global ChkCsvHdr    := g.Add("Checkbox", "x+16 yp+3 Checked", "First row is header")
     global LvCsv := g.Add("ListView",
-        "x" (TX+8) " y+6 w540 h140 Grid", ["(paste CSV below)"])
+        "x" (TX+8) " y+6 w540 h140 Grid", ["(Apply CSV data below)"])
     ; Enable column header drag-to-reorder (LVS_EX_HEADERDRAGDROP = 0x10)
     exStyle := SendMessage(0x1037, 0, 0, , "ahk_id " LvCsv.Hwnd)  ; LVM_GETEXTENDEDLISTVIEWSTYLE
     SendMessage(0x1036, 0, exStyle | 0x10, , "ahk_id " LvCsv.Hwnd) ; LVM_SETEXTENDEDLISTVIEWSTYLE
     global BtnCsvExport  := g.Add("Button",   "x" (TX+8) " y+6 w160 h22", "▼ Send to Output pane")
     global ChkCsvQuote   := g.Add("Checkbox", "x+8 yp+3",                  'Use double-quotes')
+    g.Add("Text", "x+16 yp", "(F1 for tips)")
 
     LvCsv.OnEvent("ColClick", OnCsvColClick)
     BtnCsvRemove.OnEvent("Click", OnCsvRemoveCol)
     BtnCsvExport.OnEvent("Click", OnCsvExport)
+    ChkCsvHdr.OnEvent("Click", (*) => (EditIn.Value != "") ? OnApply() : 0)
 }
 
 BuildTab_Compare() {
@@ -554,8 +734,14 @@ OnGuiSize(GuiObj, MinMax, W, H) {
 
 OnNavChange(ctrl, *) {
     global Tabs, LbNav
-    if LbNav.Value
+    if LbNav.Value {
         Tabs.Choose(LbNav.Value)
+        ; If switching to CSV tab, resize LV to current window width
+        if (LbNav.Value = 9) {
+            g.GetClientPos(, , &W, &H)
+            LayoutPanes(W, H)
+        }
+    }
 }
 
 OnToggleSplit(*) {
@@ -675,8 +861,13 @@ LoadHistory() {
 
 SaveHistory() {
     global IniFile, HISTORY_MAX, FindHistory, ReplHistory
-    try IniDelete(IniFile, "FindHistory")
-    try IniDelete(IniFile, "ReplaceHistory")
+    ; Delete individual keys rather than whole sections — whole-section delete
+    ; removes the section header, causing it to be re-appended at the bottom of
+    ; the INI on next write, which scrambles the intended section order.
+    Loop HISTORY_MAX {
+        try IniDelete(IniFile, "FindHistory",    "Item" A_Index)
+        try IniDelete(IniFile, "ReplaceHistory", "Item" A_Index)
+    }
     Loop Min(FindHistory.Length, HISTORY_MAX)
         IniWrite(FindHistory[A_Index], IniFile, "FindHistory", "Item" A_Index)
     Loop Min(ReplHistory.Length, HISTORY_MAX)
@@ -710,11 +901,199 @@ AddToHistory(cbo, arr, val) {
     cbo.Value := 1
 }
 
+; ============================================================
+;  FAVORITES  (Find/Replace tab)
+; ============================================================
+
+; Default presets — written to INI on very first launch (no [Favorites] key found).
+; Each entry: [title, find, replace, regex(0/1)]
+FR_PRESETS := [
+    ["Swap first two words on each line",
+        "^(\w+)\s+(\w+)", "$2 $1", 1],
+    ["Remove leading numbers/bullets (e.g. '1. ' or '- ')",
+        "^\s*[\d]+[.)]\s*|^\s*[-*•]\s*", "", 1],
+    ["Collapse multiple blank lines into one",
+        "\n{3,}", "\n\n", 1],
+    ["Trim trailing whitespace from every line",
+        "[ \t]+$", "", 1],
+    ["Wrap every line in HTML <li> tags",
+        "^(.+)$", "<li>$1</li>", 1],
+    ["Extract email addresses (keep only the match)",
+        "^.*?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}).*$", "$1", 1],
+    ["Convert Windows path separators to forward slashes",
+        "\\", "/", 0],
+    ["Add a comma to the end of every non-empty line",
+        "(.+)$", "$1,", 1],
+    ["Double-space (insert blank line after each line)",
+        "\n", "\n\n", 1],
+    ["Replace parenths and colon with comma",
+        "(\(|\)|\:)", ", ", 1],
+]
+
+; Strip characters that would break INI section headers: [ ] = and newlines.
+; Collapses runs of spaces caused by stripping, trims ends.
+SanitizeFaveTitle(t) {
+    t := RegExReplace(t, "[\[\]=\r\n]", "")
+    t := RegExReplace(t, " {2,}", " ")
+    return Trim(t)
+}
+
+; Populate CboFave from FaveNames array (rebuilds combo in place).
+RebuildFaveCombo() {
+    global CboFave, FaveNames
+    CboFave.Delete()
+    for name in FaveNames
+        CboFave.Add([name])
+}
+
+; Known non-favorite INI sections — excluded when scanning for favorites.
+APP_SECTIONS := Map("Window", 1, "FindHistory", 1, "ReplaceHistory", 1)
+
+; Load all favorites from INI into FaveNames[].
+; Favorites are every [Section] whose name is not a reserved app section.
+; On first run (no favorite sections found), seeds the presets.
+LoadFavorites() {
+    global IniFile, FaveNames, FR_PRESETS, APP_SECTIONS
+
+    ; Collect all section names from the INI file
+    ; IniRead with only the filename returns newline-delimited section list.
+    allSections := ""
+    try allSections := IniRead(IniFile)
+
+    ; Check if any favorite sections already exist
+    hasFaves := false
+    Loop Parse, allSections, "`n", "`r" {
+        if (A_LoopField != "" && !APP_SECTIONS.Has(A_LoopField)) {
+            hasFaves := true
+            break
+        }
+    }
+
+    if !hasFaves {
+        ; First run — seed [Window] first so it always sits at the top of the INI,
+        ; then write presets below it.  OnClose will overwrite these with real values.
+        global WIN_W, WIN_H, SplitH
+        IniWrite(WIN_W,       IniFile, "Window", "W")
+        IniWrite(WIN_H,       IniFile, "Window", "H")
+        IniWrite(SplitH?1:0,  IniFile, "Window", "SplitH")
+        IniWrite(1,           IniFile, "Window", "LastTab")
+        ; Pin [FindHistory] and [ReplaceHistory] in place before faves —
+        ; Item1 anchors the section; the first real history entry overwrites it
+        IniWrite("Placeholder", IniFile, "FindHistory",    "Item1")
+        IniWrite("Placeholder", IniFile, "ReplaceHistory", "Item1")
+        for p in FR_PRESETS {
+            IniWrite(p[2], IniFile, p[1], "Find")
+            IniWrite(p[3], IniFile, p[1], "Replace")
+            IniWrite(p[4], IniFile, p[1], "Regex")
+        }
+        try allSections := IniRead(IniFile)
+    }
+
+    ; Build FaveNames from all non-app sections, in file order
+    FaveNames := []
+    Loop Parse, allSections, "`n", "`r" {
+        s := A_LoopField
+        if (s != "" && !APP_SECTIONS.Has(s))
+            FaveNames.Push(s)
+    }
+    RebuildFaveCombo()
+}
+
+; Auto-load the selected favorite into Find/Replace fields.
+OnFaveChange(ctrl, *) {
+    global IniFile, CboFind, CboRepl, ChkFRRegex
+    title := ctrl.Text
+    if (title = "")
+        return
+    ; Only load if title matches a known favorite (ignore free-typed text mid-edit)
+    findVal := IniRead(IniFile, title, "Find",    "")
+    replVal := IniRead(IniFile, title, "Replace", "")
+    regexVal := IniRead(IniFile, title, "Regex",  "0")
+    if (findVal = "" && replVal = "")   ; not a real fave entry — user is just typing
+        return
+    CboFind.Text        := findVal
+    CboRepl.Text        := replVal
+    ChkFRRegex.Value    := Integer(regexVal)
+}
+
+; Save current Find/Replace/Regex as a favorite using the combo's text as the title.
+OnFaveSave(*) {
+    global IniFile, FaveNames, CboFave, CboFind, CboRepl, ChkFRRegex
+
+    raw := Trim(CboFave.Text)
+    if (raw = "") {
+        MsgBox("Please type a name for this favorite in the Favorites box.", "Save Favorite", 48)
+        return
+    }
+    title := SanitizeFaveTitle(raw)
+    if (title = "") {
+        MsgBox("The name you entered contains only invalid characters.`nPlease use a different name.", "Save Favorite", 48)
+        return
+    }
+
+    ; Warn if overwriting an existing fave
+    existing := IniRead(IniFile, title, "Find", "~~NONE~~")
+    if (existing != "~~NONE~~") {
+        ans := MsgBox('A favorite named "' title '" already exists.`nOverwrite it?',
+                      "Save Favorite", 52)   ; 52 = Yes/No + ? icon
+        if (ans != "Yes")
+            return
+    } else {
+        ; New entry — update live array and combo (INI file order is source of truth)
+        FaveNames.Push(title)
+        RebuildFaveCombo()
+        CboFave.Text := title   ; re-select after rebuild
+    }
+
+    ; Write the data section
+    IniWrite(CboFind.Text,      IniFile, title, "Find")
+    IniWrite(CboRepl.Text,      IniFile, title, "Replace")
+    IniWrite(ChkFRRegex.Value,  IniFile, title, "Regex")
+
+    ToolTip("Favorite saved: " title, , , 4)
+    SetTimer(() => ToolTip("", , , 4), -2000)
+}
+
+; Delete the currently selected favorite.
+OnFaveDelete(*) {
+    global IniFile, FaveNames, CboFave, CboFind, CboRepl
+
+    title := Trim(CboFave.Text)
+    if (title = "") {
+        MsgBox("No favorite is selected.", "Delete Favorite", 48)
+        return
+    }
+    ; Confirm
+    ans := MsgBox('Delete favorite "' title '"?', "Delete Favorite", 52)
+    if (ans != "Yes")
+        return
+
+    ; Remove the data section
+    try IniDelete(IniFile, title)
+
+    ; Remove from live array and combo; INI section already deleted above
+    i := 1
+    while (i <= FaveNames.Length) {
+        if (FaveNames[i] = title)
+            FaveNames.RemoveAt(i)
+        else
+            i++
+    }
+    RebuildFaveCombo()
+    CboFave.Text := ""
+    CboFind.Text := ""
+    CboRepl.Text := ""
+
+    ToolTip("Favorite deleted.", , , 4)
+    SetTimer(() => ToolTip("", , , 4), -2000)
+}
+
 OnClose(GuiObj, *) {
+    global MAX_WIN_H
     GuiObj.GetPos(, , &ww, &wh)
+    wh := Min(wh, MAX_WIN_H)   ; clamp before saving — DPI scaling can inflate GetPos result
     IniWrite(ww,          IniFile, "Window", "W")
     IniWrite(wh,          IniFile, "Window", "H")
-    IniWrite(PANE_H,      IniFile, "Window", "PaneH")
     IniWrite(SplitH?1:0,  IniFile, "Window", "SplitH")
     IniWrite(Tabs.Value,  IniFile, "Window", "LastTab")
     SaveHistory()
@@ -799,122 +1178,260 @@ GetCaseMode() {
 }
 
 Apply_Sort(txt) {
-    global SortR1, SortR2, SortR3, SortR4, SortR5, SortR6
-    global ChkSortDupe, ChkSortTrim, DdlSortKey, EditSortDelim
+    global ScopeR1, ScopeR2, ScopeR3, ScopeR4, ScopeR5, ScopeR6
+    global SortR1, SortR2, SortR3, SortR4, SortR5, SortR6, SortR7, SortR8
+    global ChkSortDupe, ChkSortTrim, DdlSortKey, EditSortDelim, RevR1, RevR2
 
-    doTrim  := ChkSortTrim.Value
-    doDupe  := ChkSortDupe.Value
-    keyMode := DdlSortKey.Value      ; 1=whole line, 2=word1, 3=word2, 4=last word, 5=after delim
+    scope := ScopeR1.Value ? 1 : ScopeR2.Value ? 2 : ScopeR3.Value ? 3
+           : ScopeR4.Value ? 4 : ScopeR5.Value ? 5 : 6
+    op    := 1
+    for i, r in [SortR1,SortR2,SortR3,SortR4,SortR5,SortR6,SortR7,SortR8]
+        if r.Value {
+            op := i
+            break
+        }
+
+    doTrim  := ChkSortTrim.Value && (scope = 1 || scope = 2)
+    doDupe  := ChkSortDupe.Value && (scope = 1 || scope = 2)
+    keyMode := DdlSortKey.Value
     delim   := EditSortDelim.Value
     if (delim = "")
         delim := "-"
 
-    ; Determine sort mode
-    mode := 1
-    for i, r in [SortR1, SortR2, SortR3, SortR4, SortR5, SortR6]
-        if r.Value {
-            mode := i
-            break
+    ; ----------------------------------------------------------------
+    ; SCOPE: LINES (scope=1) — original behaviour
+    ; ----------------------------------------------------------------
+    if scope = 1 {
+        if op = 7 {   ; Reverse line order
+            lines := StrSplit(txt, "`n", "`r")
+            rev := []
+            Loop lines.Length
+                rev.Push(lines[lines.Length - A_Index + 1])
+            return JoinLines(rev)
         }
-
-    ; A→Z and Z→A with whole-line key: use AHK's built-in Sort (fast path)
-    if (mode = 1 || mode = 2) && (keyMode = 1) {
-        sorted := doTrim ? TrimLines(txt) : txt
-        opts   := (mode = 2) ? "R" : ""
+        ; A→Z / Z→A fast path (whole-line key)
+        if (op = 1 || op = 2) && keyMode = 1 {
+            sorted := doTrim ? TrimLines(txt) : txt
+            opts   := (op = 2 ? "R" : "") . (doDupe ? " U" : "")
+            return Sort(sorted, opts)
+        }
+        lines := StrSplit(txt, "`n", "`r")
+        work  := []
+        for line in lines
+            work.Push(doTrim ? Trim(line) : line)
+        SortWork(work, op, keyMode, delim)
         if doDupe
-            opts .= " U"
-        sorted := Sort(sorted, opts)
-        return sorted
+            work := DedupeArray(work)
+        return JoinLines(work)
     }
 
-    ; All other cases: split into array, sort with key extractor
-    lines := StrSplit(txt, "`n", "`r")
-    work  := []
-    for line in lines
-        work.Push(doTrim ? Trim(line) : line)
-
-    if (mode = 1 || mode = 2) {
-        ; A→Z or Z→A with a custom sort key — insertion sort with SortKeyOf
-        reverse := (mode = 2)
-        n := work.Length
-        i := 2
-        while i <= n {
-            cur    := work[i]
-            curKey := StrLower(SortKeyOf(cur, keyMode, delim))
-            j := i - 1
-            while j >= 1 {
-                cmpKey := StrLower(SortKeyOf(work[j], keyMode, delim))
-                cmp    := StrCompare(cmpKey, curKey)
-                swapNeeded := reverse ? (cmp < 0) : (cmp > 0)
-                if swapNeeded {
-                    work[j+1] := work[j]
-                    j--
-                } else
-                    break
-            }
-            work[j+1] := cur
-            i++
+    ; ----------------------------------------------------------------
+    ; SCOPE: PARAGRAPHS (scope=2) — blank-line separated blocks
+    ; ----------------------------------------------------------------
+    if scope = 2 {
+        paras := SplitParas(txt)
+        if op = 7 {   ; Reverse paragraph order
+            rev := []
+            Loop paras.Length
+                rev.Push(paras[paras.Length - A_Index + 1])
+            return JoinParas(rev)
         }
-    } else if (mode = 3) {
-        ; Random — Fisher-Yates shuffle
-        n := work.Length
-        Loop n - 1 {
-            i := n - A_Index + 1
-            j := Random(1, i)
-            tmp := work[i], work[i] := work[j], work[j] := tmp
-        }
-    } else if (mode = 4) {
-        ; Length short→long
-        SortByLength(work, false)
-    } else if (mode = 5) {
-        ; Length long→short
-        SortByLength(work, true)
-    } else if (mode = 6) {
-        ; Numeric / natural sort — key-aware
-        reverse := false
-        n := work.Length
-        i := 2
-        while i <= n {
-            cur    := work[i]
-            curKey := SortKeyOf(cur, keyMode, delim)
-            j := i - 1
-            while j >= 1 {
-                cmpKey := SortKeyOf(work[j], keyMode, delim)
-                cmp    := NaturalCompare(cmpKey, curKey)
-                if cmp > 0 {
-                    work[j+1] := work[j]
-                    j--
-                } else
-                    break
-            }
-            work[j+1] := cur
-            i++
-        }
+        SortWork(paras, op, 1, delim)   ; sort key always whole-para for paras
+        if doDupe
+            paras := DedupeArray(paras)
+        return JoinParas(paras)
     }
 
-    ; Remove duplicates (case-insensitive, preserving order)
-    if doDupe {
-        seen := Map()
-        deduped := []
-        for line in work {
-            key := StrLower(line)
-            if !seen.Has(key) {
-                seen[key] := true
-                deduped.Push(line)
+    ; ----------------------------------------------------------------
+    ; SCOPE: WORDS (scope=3) — sort words within each line
+    ; ----------------------------------------------------------------
+    if scope = 3 {
+        lines := StrSplit(txt, "`n", "`r")
+        out   := []
+        for line in lines {
+            if Trim(line) = "" {
+                out.Push(line)
+                continue
             }
+            words := SortSplitWords(line)
+            if op = 7 {   ; Reverse word order
+                rev := []
+                Loop words.Length
+                    rev.Push(words[words.Length - A_Index + 1])
+                words := rev
+            } else if op = 8 {   ; Typoglycemia — shuffle middle letters of each word
+                typo := []
+                for w in words
+                    typo.Push(Typoglycemia(w))
+                words := typo
+            } else {
+                SortWork(words, op, 1, delim)
+            }
+            out.Push(JoinArr(words, " "))
         }
-        work := deduped
+        return JoinLines(out)
     }
 
-    return JoinLines(work)
+    ; ----------------------------------------------------------------
+    ; SCOPE: LETTERS (scope=4) — sort/reverse letters within each word
+    ; ----------------------------------------------------------------
+    if scope = 4 {
+        revPerWord := RevR1.Value   ; true=per-word, false=whole-line
+        lines := StrSplit(txt, "`n", "`r")
+        out   := []
+        for line in lines {
+            if Trim(line) = "" {
+                out.Push(line)
+                continue
+            }
+            if op = 7 {
+                if revPerWord {
+                    ; Reverse each word's letters independently
+                    words := SortSplitWords(line)
+                    rev   := []
+                    for w in words
+                        rev.Push(ReverseStr(w))
+                    out.Push(JoinArr(rev, " "))
+                } else {
+                    ; Reverse entire line as one string
+                    out.Push(ReverseStr(line))
+                }
+            } else {
+                ; Sort letters within each word
+                words := SortSplitWords(line)
+                sorted := []
+                for w in words {
+                    chars := []
+                    Loop StrLen(w)
+                        chars.Push(SubStr(w, A_Index, 1))
+                    SortWork(chars, op, 1, "")
+                    sorted.Push(JoinArr(chars, ""))
+                }
+                out.Push(JoinArr(sorted, " "))
+            }
+        }
+        return JoinLines(out)
+    }
+
+    ; ----------------------------------------------------------------
+    ; SCOPE: WORDS OVERALL (scope=5) — treat entire text as one word pool
+    ; ----------------------------------------------------------------
+    if scope = 5 {
+        ; Collect all words from all lines preserving nothing else
+        allWords := []
+        for line in StrSplit(txt, "`n", "`r")
+            for w in SortSplitWords(line)
+                allWords.Push(w)
+        if op = 7 {   ; Reverse overall word order
+            rev := []
+            Loop allWords.Length
+                rev.Push(allWords[allWords.Length - A_Index + 1])
+            allWords := rev
+        } else if op = 8 {   ; Typoglycemia
+            for i, w in allWords
+                allWords[i] := Typoglycemia(w)
+        } else {
+            SortWork(allWords, op, 1, "")
+        }
+        return JoinArr(allWords, " ")
+    }
+
+    ; ----------------------------------------------------------------
+    ; SCOPE: LETTERS OVERALL (scope=6) — treat entire text as one char pool
+    ; ----------------------------------------------------------------
+    if scope = 6 {
+        revPerWord := RevR1.Value
+        if op = 7 {
+            if revPerWord {
+                ; Reverse each word independently, preserve line/word structure
+                lines := StrSplit(txt, "`n", "`r")
+                out   := []
+                for line in lines {
+                    words := SortSplitWords(line)
+                    rev   := []
+                    for w in words
+                        rev.Push(ReverseStr(w))
+                    out.Push(JoinArr(rev, " "))
+                }
+                return JoinLines(out)
+            } else {
+                ; Reverse entire text as one string (letters only — spaces/newlines stay)
+                return ReverseStr(txt)
+            }
+        }
+        ; Sort/shuffle all non-space characters across the whole text
+        allChars := []
+        Loop StrLen(txt) {
+            ch := SubStr(txt, A_Index, 1)
+            if (ch != " " && ch != "`n" && ch != "`r" && ch != "`t")
+                allChars.Push(ch)
+        }
+        SortWork(allChars, op, 1, "")
+        ; Re-weave sorted chars back into original spacing structure
+        ci  := 1
+        out := ""
+        Loop StrLen(txt) {
+            ch := SubStr(txt, A_Index, 1)
+            if (ch = " " || ch = "`n" || ch = "`r" || ch = "`t") {
+                out .= ch
+            } else {
+                out .= (ci <= allChars.Length) ? allChars[ci++] : ch
+            }
+        }
+        return out
+    }
+
+    return txt   ; fallback
+}
+
+; Typoglycemia: keep first and last letter of a word, shuffle the middle.
+; Leading/trailing punctuation is preserved and not counted as letters.
+; Words whose alphabetic core is 3 chars or fewer are returned unchanged.
+Typoglycemia(word) {
+    ; Strip leading punctuation
+    leadPunct := ""
+    w := word
+    while StrLen(w) > 0 && RegExMatch(SubStr(w, 1, 1), "[^\w]") {
+        leadPunct .= SubStr(w, 1, 1)
+        w := SubStr(w, 2)
+    }
+    ; Strip trailing punctuation
+    trailPunct := ""
+    while StrLen(w) > 0 && RegExMatch(SubStr(w, StrLen(w), 1), "[^\w]") {
+        trailPunct := SubStr(w, StrLen(w), 1) . trailPunct
+        w := SubStr(w, 1, StrLen(w) - 1)
+    }
+    ; Core must have at least 4 chars to be worth scrambling
+    n := StrLen(w)
+    if n <= 3
+        return word   ; return original with punctuation intact
+    ; 4-letter core: guaranteed swap of the two middle chars (Fisher-Yates gives 50% no-op)
+    if n = 4 {
+        swapped := SubStr(w, 3, 1) . SubStr(w, 2, 1)
+        return leadPunct . SubStr(w, 1, 1) . swapped . SubStr(w, 4, 1) . trailPunct
+    }
+    ; 5+ letter core: shuffle all middle chars
+    middle := []
+    Loop n - 2
+        middle.Push(SubStr(w, A_Index + 1, 1))
+    m := middle.Length
+    Loop m - 1 {
+        i := m - A_Index + 1
+        j := Random(1, i)
+        tmp := middle[i], middle[i] := middle[j], middle[j] := tmp
+    }
+    shuffled := ""
+    for ch in middle
+        shuffled .= ch
+    return leadPunct . SubStr(w, 1, 1) . shuffled . SubStr(w, n, 1) . trailPunct
 }
 
 ; Return the portion of a line used as the sort key.
 ;   keyMode 1 = whole line
-;   keyMode 2 = first word  (split on whitespace)
+;   keyMode 2 = first word
 ;   keyMode 3 = second word
 ;   keyMode 4 = last word
-;   keyMode 5 = text after the first occurrence of delim
+;   keyMode 5 = text after first occurrence of delim
 SortKeyOf(line, keyMode, delim) {
     if keyMode = 1
         return line
@@ -922,30 +1439,138 @@ SortKeyOf(line, keyMode, delim) {
         pos := InStr(line, delim)
         return pos ? LTrim(SubStr(line, pos + StrLen(delim))) : line
     }
-    ; Word-based modes — split on runs of whitespace
     words := StrSplit(Trim(line), " ", "`t")
-    ; Collapse empty tokens that StrSplit may produce from multiple spaces
-    cleanWords := []
+    clean := []
     for w in words
         if w != ""
-            cleanWords.Push(w)
-    if cleanWords.Length = 0
+            clean.Push(w)
+    if clean.Length = 0
         return line
     if keyMode = 2
-        return cleanWords[1]
+        return clean[1]
     if keyMode = 3
-        return cleanWords.Length >= 2 ? cleanWords[2] : cleanWords[1]
+        return clean.Length >= 2 ? clean[2] : clean[1]
     if keyMode = 4
-        return cleanWords[cleanWords.Length]
+        return clean[clean.Length]
     return line
 }
 
+; Sort an Array in-place using the chosen operation and key mode.
+; Works for lines, paragraphs, words, or single chars.
+SortWork(arr, op, keyMode, delim) {
+    if arr.Length < 2
+        return
+    if op = 1 || op = 2 {
+        reverse := (op = 2)
+        n := arr.Length
+        i := 2
+        while i <= n {
+            cur    := arr[i]
+            curKey := StrLower(SortKeyOf(cur, keyMode, delim))
+            j := i - 1
+            while j >= 1 {
+                cmp := StrCompare(StrLower(SortKeyOf(arr[j], keyMode, delim)), curKey)
+                if (reverse ? cmp < 0 : cmp > 0) {
+                    arr[j+1] := arr[j]
+                    j--
+                } else
+                    break
+            }
+            arr[j+1] := cur
+            i++
+        }
+    } else if op = 3 {
+        n := arr.Length
+        Loop n - 1 {
+            i := n - A_Index + 1
+            j := Random(1, i)
+            tmp := arr[i], arr[i] := arr[j], arr[j] := tmp
+        }
+    } else if op = 4 || op = 5 {
+        SortByLength(arr, op = 5)
+    } else if op = 6 {
+        n := arr.Length
+        i := 2
+        while i <= n {
+            cur    := arr[i]
+            curKey := SortKeyOf(cur, keyMode, delim)
+            j := i - 1
+            while j >= 1 {
+                if NaturalCompare(SortKeyOf(arr[j], keyMode, delim), curKey) > 0 {
+                    arr[j+1] := arr[j]
+                    j--
+                } else
+                    break
+            }
+            arr[j+1] := cur
+            i++
+        }
+    }
+}
+
+; Split text into paragraphs (separated by one or more blank lines)
+SplitParas(txt) {
+    paras := []
+    cur   := ""
+    for line in StrSplit(txt, "`n", "`r") {
+        if Trim(line) = "" {
+            if cur != ""
+                paras.Push(cur)
+            cur := ""
+        } else {
+            cur := (cur = "") ? line : cur . "`n" . line
+        }
+    }
+    if cur != ""
+        paras.Push(cur)
+    return paras
+}
+
+; Re-join paragraphs with a blank line between each
+JoinParas(paras) {
+    out := ""
+    for i, p in paras
+        out .= (i = 1 ? "" : "`n`n") . p
+    return out
+}
+
+; Split a line into words (whitespace-delimited, preserving nothing)
+SortSplitWords(line) {
+    words := StrSplit(Trim(line), " ", "`t")
+    clean := []
+    for w in words
+        if w != ""
+            clean.Push(w)
+    return clean
+}
+
+; Reverse a string character by character
+ReverseStr(s) {
+    out := ""
+    Loop StrLen(s)
+        out := SubStr(s, A_Index, 1) . out
+    return out
+}
+
+; Remove duplicate entries from an array (case-insensitive, preserve order)
+DedupeArray(arr) {
+    seen    := Map()
+    deduped := []
+    for item in arr {
+        key := StrLower(item)
+        if !seen.Has(key) {
+            seen[key] := true
+            deduped.Push(item)
+        }
+    }
+    return deduped
+}
 SortByLength(arr, descending) {
-    ; Insertion sort (stable, fine for typical text sizes)
+    ; Insertion sort — stable, fine for typical text sizes
     n := arr.Length
     i := 2
     while i <= n {
-        key := arr[i]
+        key  := arr[i]
         kLen := StrLen(key)
         j := i - 1
         while j >= 1 {
@@ -1020,11 +1645,17 @@ Apply_FindReplace(txt) {
     if useRegex {
         flags := caseSens ? "m)" : "mi)"   ; m) = multiline: ^ and $ match per line
         pat   := flags . findStr
-        if replAll
-            return RegExReplace(txt, pat, replStr)
-        else {
-            if RegExMatch(txt, pat, &m)
-                return SubStr(txt, 1, m.Pos - 1) . replStr . SubStr(txt, m.Pos + m.Len)
+        try {
+            if replAll
+                return RegExReplace(txt, pat, replStr)
+            else {
+                if RegExMatch(txt, pat, &m)
+                    return SubStr(txt, 1, m.Pos - 1) . replStr . SubStr(txt, m.Pos + m.Len)
+                return txt
+            }
+        } catch as e {
+            ToolTip("Invalid regex: " e.Message, , , 3)
+            SetTimer(() => ToolTip("", , , 3), -2500)
             return txt
         }
     } else {
@@ -1055,12 +1686,61 @@ RegExEscape(s) {
 }
 
 Apply_Remove(txt) {
-    lines := StrSplit(txt, "`n", "`r")
-    out   := []
-    seen  := Map()
+    global ChkRmBlank, ChkRmDupe, ChkRmLead, ChkRmTrail
+    global ChkRmHTML, ChkRmBBCode, ChkRmNonASCII
+    global NumTrimL, NumTrimR
+    global DdlRmBeforeAfter, EditRmDelim1, ChkRmKeepDelim1
+    global EditRmDelim2, EditRmDelim3, ChkRmKeepDelim2, ChkRmKeepDelim3
 
     trimL := Integer(NumTrimL.Value)
     trimR := Integer(NumTrimR.Value)
+
+    ; --- Before/After delimiter (applied to whole text) ---
+    delim1 := EditRmDelim1.Value
+    if (delim1 != "") {
+        isBefore   := (DdlRmBeforeAfter.Value = 1)   ; 1=before, 2=after
+        keepDelim1 := ChkRmKeepDelim1.Value
+        pos := InStr(txt, delim1)
+        if pos {
+            if isBefore {
+                ; Remove everything before the delimiter
+                txt := keepDelim1 ? SubStr(txt, pos) : SubStr(txt, pos + StrLen(delim1))
+            } else {
+                ; Remove everything after the delimiter
+                txt := keepDelim1 ? SubStr(txt, 1, pos + StrLen(delim1) - 1) : SubStr(txt, 1, pos - 1)
+            }
+        }
+    }
+
+    ; --- Between two delimiters (applied to whole text, all occurrences) ---
+    delim2 := EditRmDelim2.Value
+    delim3 := EditRmDelim3.Value
+    if (delim2 != "" && delim3 != "") {
+        keepStart := ChkRmKeepDelim2.Value
+        keepEnd   := ChkRmKeepDelim3.Value
+        out2 := ""
+        searchPos := 1
+        Loop {
+            startPos := InStr(txt, delim2, , searchPos)
+            if !startPos
+                break
+            endPos := InStr(txt, delim3, , startPos + StrLen(delim2))
+            if !endPos
+                break
+            ; Keep everything up to (and optionally including) delim2
+            keepUpTo := keepStart ? startPos + StrLen(delim2) - 1 : startPos - 1
+            out2 .= SubStr(txt, searchPos, keepUpTo - searchPos + 1)
+            ; Skip to after delim3, optionally keeping it
+            searchPos := keepEnd ? endPos : endPos + StrLen(delim3)
+        }
+        out2 .= SubStr(txt, searchPos)
+        txt := out2
+    }
+
+    ; --- Per-line operations ---
+    lines := StrSplit(txt, "`n", "`r")
+    out   := []
+    seen  := Map()
 
     for line in lines {
         if (trimL > 0)
@@ -1091,8 +1771,9 @@ Apply_Remove(txt) {
 }
 
 Apply_Extract(txt) {
-    global ExtR1, ExtR2, ExtR3, ExtR4, ExtR5
+    global ExtR1, ExtR2, ExtR3, ExtR4, ExtR5, ExtR6
     global EditExtLinePattern, EditExtPattern
+    global EditExtDel1, EditExtDel2, NumExtNth, ChkExtKeepDel1, ChkExtKeepDel2
     global ChkExtUnique, ChkExtPerLine, ChkExtSemicolon
 
     doUnique    := ChkExtUnique.Value
@@ -1164,6 +1845,41 @@ Apply_Extract(txt) {
             if newPos <= pos  ; safety — avoid infinite loop on zero-length match
                 break
             pos := newPos
+        }
+
+    } else if ExtR6.Value {
+        ; Between delimiters — extract content between del1 and del2
+        del1 := EditExtDel1.Value
+        del2 := EditExtDel2.Value
+        if (del1 = "" || del2 = "") {
+            ToolTip("Enter both start and end delimiters.", , , 3)
+            SetTimer(() => ToolTip("", , , 3), -1800)
+            return ""
+        }
+        keepDel1 := ChkExtKeepDel1.Value
+        keepDel2 := ChkExtKeepDel2.Value
+        nth      := Integer(NumExtNth.Value)   ; 0 = all, 1+ = specific occurrence
+
+        searchPos   := 1
+        occurrence  := 0
+        Loop {
+            startPos := InStr(txt, del1, , searchPos)
+            if !startPos
+                break
+            endPos := InStr(txt, del2, , startPos + StrLen(del1))
+            if !endPos
+                break
+            occurrence++
+            ; Skip if we want a specific Nth and haven't reached it yet
+            if (nth = 0 || occurrence = nth) {
+                extracted := keepDel1 ? del1 : ""
+                extracted .= SubStr(txt, startPos + StrLen(del1), endPos - startPos - StrLen(del1))
+                extracted .= keepDel2 ? del2 : ""
+                matches.Push(extracted)
+                if (nth > 0)   ; specific occurrence found — stop
+                    break
+            }
+            searchPos := endPos + StrLen(del2)
         }
     }
 
@@ -1415,10 +2131,11 @@ GetPadMode() {
 }
 
 Apply_CsvView(txt) {
-    global LvCsv, CsvSortCol, CsvSortAsc, CsvHeaders
-    CsvSortCol := 0
-    CsvSortAsc := true
-    CsvHeaders := []
+    global LvCsv, CsvSortCol, CsvSortAsc, CsvHeaders, ChkCsvHdr
+    CsvSortCol  := 0
+    CsvSortAsc  := true
+    CsvHeaders  := []
+    hasHdr      := ChkCsvHdr.Value   ; 1 = first row is header, 0 = all rows are data
 
     ; Clear existing columns and rows
     LvCsv.Delete()
@@ -1435,11 +2152,26 @@ Apply_CsvView(txt) {
         return
     }
 
-    ; Parse first line as header
-    headers := ParseCSVLine(lines[1])
-    if (headers.Length = 0) {
-        LvCsv.InsertCol(1, 140, "(empty)")
-        return
+    ; Determine headers and data-row start index
+    if hasHdr {
+        ; First row supplies column names
+        headers := ParseCSVLine(lines[1])
+        if (headers.Length = 0) {
+            LvCsv.InsertCol(1, 140, "(empty)")
+            return
+        }
+        dataStart := 2
+    } else {
+        ; Peek at first row to get column count, generate generic names
+        firstRow := ParseCSVLine(lines[1])
+        if (firstRow.Length = 0) {
+            LvCsv.InsertCol(1, 140, "(empty)")
+            return
+        }
+        headers := []
+        Loop firstRow.Length
+            headers.Push("Col " A_Index)
+        dataStart := 1   ; all rows including row 1 are data
     }
 
     ; Add columns and store in CsvHeaders
@@ -1448,9 +2180,8 @@ Apply_CsvView(txt) {
         LvCsv.InsertCol(i, 100, h)
 
     ; Add data rows
-    rowStart := (lines.Length > 1) ? 2 : lines.Length + 1
-    Loop lines.Length - 1 {
-        rowLine := lines[A_Index + 1]
+    Loop lines.Length - (dataStart - 1) {
+        rowLine := lines[A_Index + (dataStart - 1)]
         if (Trim(rowLine) = "")
             continue
         fields := ParseCSVLine(rowLine)
@@ -1460,7 +2191,7 @@ Apply_CsvView(txt) {
         LvCsv.Add("", fields*)
     }
 
-    ; Auto-size columns (cap at 200px)
+    ; Auto-size columns
     Loop headers.Length
         LvCsv.ModifyCol(A_Index, "AutoHdr")
 
@@ -1537,6 +2268,10 @@ OnCsvColClick(ctrl, colIndex) {
     global CsvSortCol, CsvSortAsc, CsvHeaders
     rowCount := ctrl.GetCount()
     colCount  := LvColCount(ctrl)
+
+    ; No real data loaded yet — ignore click
+    if (rowCount = 0 || CsvHeaders.Length = 0)
+        return
     order     := LvGetColOrder(ctrl, colCount)
 
     ; Find visual position of the clicked logical column
@@ -1679,21 +2414,25 @@ CsvRemoveColumn(ctrl, colIdx) {
 }
 
 OnCsvExport(*) {
-    global LvCsv, EditOut, CsvHeaders, ChkCsvQuote
+    global LvCsv, EditOut, CsvHeaders, ChkCsvQuote, ChkCsvHdr
 
     colCount   := LvColCount(LvCsv)
     rowCount   := LvCsv.GetCount()
     forceQuote := ChkCsvQuote.Value
+    hasHdr     := ChkCsvHdr.Value
     if (colCount = 0)
         return
 
     order := LvGetColOrder(LvCsv, colCount)
     csvLines := []
 
-    headerFields := []
-    for logicalIdx in order
-        headerFields.Push(CsvQuote(logicalIdx <= CsvHeaders.Length ? CsvHeaders[logicalIdx] : "", forceQuote))
-    csvLines.Push(JoinArr(headerFields, ","))
+    ; Only write header row if data actually had one — synthetic "Col N" names are not exported
+    if hasHdr {
+        headerFields := []
+        for logicalIdx in order
+            headerFields.Push(CsvQuote(logicalIdx <= CsvHeaders.Length ? CsvHeaders[logicalIdx] : "", forceQuote))
+        csvLines.Push(JoinArr(headerFields, ","))
+    }
 
     Loop rowCount {
         ri := A_Index
@@ -2195,32 +2934,42 @@ ShowHelp(tabIndex) {
 
         2,
 "Sort Tab`n`n" .
-"Sorts the lines of the Input pane and writes the result to Output.`n`n" .
-"MODES`n" .
-"  A → Z               — alphabetical ascending (case-insensitive)`n" .
-"  Z → A               — alphabetical descending`n" .
-"  Random              — random shuffle`n" .
-"  Length (short→long) — shorter lines first`n" .
-"  Length (long→short) — longer lines first`n" .
-"  Numeric             — natural/numeric sort (e.g. 2 before 10)`n`n" .
-"OPTIONS`n" .
-"  Remove duplicate lines  — keeps only the first occurrence of each line`n" .
-"  Trim whitespace         — strips leading/trailing spaces before comparing`n`n" .
-"SORT KEY`n" .
-"  Controls which part of each line is used for the comparison.  " .
-"The full original line is always kept in the output — only the comparison key changes.`n`n" .
-"  Whole line       — default; sorts on the entire line`n" .
-"  Word 1           — sorts on the first word only`n" .
-"  Word 2           — sorts on the second word (e.g. last name in 'First Last' lists)`n" .
-"  Last word        — sorts on the final word`n" .
-"  After delimiter  — sorts on the text following the first occurrence of the " .
-"delimiter character (set in the small box to the right of the dropdown)`n`n" .
-"  The Sort key applies to A→Z, Z→A, and Numeric modes.  " .
-"Length and Random always use the whole line.`n`n" .
+"Sorts or reorders the Input text and writes the result to Output.`n`n" .
+"APPLY TO  (what unit is reordered)`n" .
+"  Lines                — reorders whole lines`n" .
+"  Paragraphs           — reorders blank-line-separated blocks`n" .
+"  Words (within line)  — reorders words within each line independently`n" .
+"  Letters (within word)— reorders letters within each word independently`n" .
+"  Words (overall)      — treats all words in the entire text as one pool`n" .
+"  Letters (overall)    — treats all non-space characters as one pool`n`n" .
+"OPERATION`n" .
+"  A → Z          — alphabetical ascending (case-insensitive)`n" .
+"  Z → A          — alphabetical descending`n" .
+"  Random        — random shuffle`n" .
+"  Length ↑       — shorter items first  (not available for Letters)`n" .
+"  Length ↓       — longer items first   (not available for Letters)`n" .
+"  Numeric       — natural/numeric sort, e.g. 2 before 10  (Lines/Paragraphs only)`n" .
+"  Reverse       — flip order of lines/paragraphs/words; reverse letters within words`n" .
+"  Typoglycemia  — shuffle middle letters of each word, keeping first and last fixed`n" .
+"                  (Words scopes only)  e.g. 'hello' → 'hlleo'`n`n" .
+"OPTIONS  (Lines and Paragraphs only)`n" .
+"  Remove duplicates  — keeps only the first occurrence of each item`n" .
+"  Trim whitespace    — strips leading/trailing spaces before comparing`n`n" .
+"SORT KEY  (Lines and Paragraphs only)`n" .
+"  Controls which part of each line is used for comparison.  " .
+"The full original line is always kept in output.`n" .
+"  Whole line / Word 1 / Word 2 / Last word / After delimiter`n" .
+"  Applies to A→Z, Z→A, and Numeric operations.`n`n" .
+"REVERSE LETTERS sub-options  (Letters scope + Reverse operation)`n" .
+"  Per word    — each word reversed independently: 'hello world' → 'olleh dlrow'`n" .
+"  Whole line  — entire line reversed as one string: 'hello world' → 'dlrow olleh'`n`n" .
 "EXAMPLES`n" .
-"  'First Last' name list → mode A→Z, key Word 2`n" .
-"  'red-dog / blue-fish'  → mode A→Z, key After delimiter, delim '-'`n" .
-"  '10. item / 2. item'   → mode Numeric, key Word 2 (skips the number prefix)",
+"  Flip name order (First Last → Last First):  scope Lines, op A→Z, key Word 2`n" .
+"  Shuffle paragraphs randomly:               scope Paragraphs, op Random`n" .
+"  Alphabetise words on each line:            scope Words (within line), op A→Z`n" .
+"  Mirror each word's letters:                scope Letters (within word), op Reverse, Per word`n" .
+"  Scramble all words ignoring line breaks:   scope Words (overall), op Random`n" .
+"  Fun scramble, still readable:              scope Words (within line), op Typoglycemia",
 
         3,
 "Find / Replace Tab`n`n" .
@@ -2235,6 +2984,16 @@ ShowHelp(tabIndex) {
 "  Both ComboBoxes remember up to 10 recent entries.  " .
 "Click the dropdown arrow to revisit a previous search or replacement.  " .
 "History is saved to ttSettings.ini and restored on next launch.`n`n" .
+"FAVORITES`n" .
+"  The Favorites combobox stores named Find/Replace/Regex combinations.`n" .
+"  Scroll through names (mouse wheel or arrow keys) to preview each definition.`n" .
+"  Selecting a name auto-loads its Find, Replace, and Regex settings.`n" .
+"  To save a new favorite: fill in Find/Replace, type a name in the Favorites`n" .
+"    box, then click [Save fave].  If the name already exists you will be asked`n" .
+"    to confirm overwrite.`n" .
+"  To delete: select the name and click [Delete fave].`n" .
+"  Favorites are stored in ttSettings.ini under their own named sections.`n" .
+"  To reorder favorites, open ttSettings.ini and edit the [Favorites] Item keys.`n`n" .
 "REGEX EXAMPLES`n" .
 "  Swap first two words on each line`n" .
 "    Find:    ^(\w+)\s+(\w+)`n" .
@@ -2284,7 +3043,19 @@ ShowHelp(tabIndex) {
 "TRIM N CHARS`n" .
 "  LEFT  — removes the first N characters from every line`n" .
 "  RIGHT — removes the last N characters from every line`n`n" .
-"TIP: Set LEFT=0 and RIGHT=0 to skip char-trimming while still using the checkboxes above.",
+"TIP: Set LEFT=0 and RIGHT=0 to skip char-trimming while still using the checkboxes above.`n`n" .
+"REMOVE BEFORE / AFTER DELIMITER`n" .
+"  Removes everything before or after the first occurrence of a delimiter string.`n" .
+"  'before' — keeps only the text from the delimiter onward`n" .
+"  'after'  — keeps only the text up to the delimiter`n" .
+"  Keep delimiter — if checked, the delimiter itself is preserved in the output`n" .
+"  Example: 'Name: John Smith', after ':', keep=off → ' John Smith'`n`n" .
+"REMOVE BETWEEN DELIMITERS`n" .
+"  Removes all content between every matching Start/End delimiter pair.`n" .
+"  Keep start / Keep end — independently preserve each delimiter in the output`n" .
+"  All occurrences are removed in one pass.`n" .
+"  Example: 'Hello [world] foo [bar]', start '[', end ']', keep off → 'Hello  foo '`n" .
+"  Example: same with keep start on → 'Hello [ foo ['",
 
         5,
 "Extract Tab`n`n" .
@@ -2297,7 +3068,16 @@ ShowHelp(tabIndex) {
 "  Lines matching       — keeps only lines that contain the given pattern (like grep)`n" .
 "                         Plain text or regex; e.g. 'Score' or '\d{2,3}'`n" .
 "  Custom pattern       — extracts regex matches; if your pattern has a capture`n" .
-"                         group (…) only the captured portion is returned`n`n" .
+"                         group (…) only the captured portion is returned`n" .
+"  Between delimiters   — extracts content between a start and end delimiter string`n" .
+"                         Start/end delimiters can be any text (not regex)`n`n" .
+"BETWEEN DELIMITERS OPTIONS`n" .
+"  Keep start delim / Keep end delim — include the delimiter strings in the extracted result`n" .
+"  Occurrence: 1 = first match only, 2 = second only, 0 = all occurrences`n" .
+"  Example: 'Name: [John] Age: [30]', start '[', end ']', occurrence 0`n" .
+"           → extracts 'John' and '30' (two matches)`n" .
+"  Example: same with occurrence 2 → extracts only '30'`n" .
+"  Example: same with Keep start on → extracts '[John' and '[30'`n`n" .
 "OUTPUT OPTIONS`n" .
 "  Unique only          — removes duplicate matches (case-insensitive)`n" .
 "  One per line         — each match on its own line (default)`n" .
