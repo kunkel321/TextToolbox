@@ -1,20 +1,26 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
 TraySetIcon("shell32.dll", 75)
 
 ; ============================================================
 ;  App:             TextToolbox.ahk
-;  Version Date:    5-13-2026 
+;  Version Date:    5-16-2026 
 ;  By:              Kunkel321 with Claude AI
 ;  GitHub:          https://github.com/kunkel321/TextToolbox
 ;  AHK Forum:       https://www.autohotkey.com/boards/viewtopic.php?f=83&t=140654
 ;  Description:     Dual-pane text transformation utility based on Tidbit's 
 ;  same-name tool.  (Also see onboard help via F1 key.)
-;  Settings persisted to ttSettings.ini (same folder as script).
+;  Settings persisted to Data\ttSettings.ini (window, history, favorites).
+;  Tab control states persisted to Data\ttDefaults.ini.
+;  Named configs stored as Data\tt<name>.ini.
 ; ============================================================
 
 ; ---------- Config / Globals --------------------------------
-IniFile      := A_ScriptDir "\ttSettings.ini"
+DataDir      := A_ScriptDir "\Data"
+if !DirExist(DataDir)
+    DirCreate(DataDir)
+IniFile      := DataDir "\ttSettings.ini"
+DefaultsFile := DataDir "\ttDefaults.ini"   ; sticky tab control states
 UndoStack    := []      ; Array of Maps {in, out}, index 1 = most recent
 RedoStack    := []      ; Array of Maps {in, out}, index 1 = most recent
 UNDO_MAX     := 20     ; max undo/redo levels
@@ -49,23 +55,22 @@ PushUndo(inTxt, outTxt) {
 }
 
 PAD      := 10
-BTN_H    := 28
-BTN_W    := 100
 TAB_H    := 220   ; fixed height of the tab/controls strip (top section)
 LB_W     := 118   ; width of the left-side navigation listbox
 PANE_H   := 280   ; initial height of the dual edit-pane area (resizable)
 WIN_W    := 780
-TOOL_H   := 26    ; toolbar row height (fixed)
+TOOL_H   := 26    ; toolbar row height (fixed) — used for both toolbar rows
+TOOL_PAD := 2     ; tighter gap above/between/below the two toolbar rows
 ; Layout (top to bottom):
-;   PAD  →  tab/listbox area (TAB_H)  →  PAD  →  toolbar (TOOL_H)  →  PAD  →  panes (PANE_H)  →  PAD
-WIN_H    := PAD + TAB_H + PAD + TOOL_H + PAD + PANE_H + PAD
+;   PAD → tab/listbox (TAB_H) → TOOL_PAD → configs bar (TOOL_H) → TOOL_PAD → button bar (TOOL_H) → TOOL_PAD → panes (PANE_H) → PAD
+WIN_H    := PAD + TAB_H + TOOL_PAD + TOOL_H + TOOL_PAD + TOOL_H + TOOL_PAD + PANE_H + PAD
 SplitH   := true  ; true = side-by-side, false = stacked
 STRIP_W  := 24    ; width of the narrow vertical strip in vert mode
 
 ; ============================================================
 ;  LOAD SETTINGS
 ; ============================================================
-MAX_WIN_H := 760   ; hard ceiling — prevents DPI-scaling creep on repeated open/close
+MAX_WIN_H := 960   ; hard ceiling — prevents DPI-scaling creep on repeated open/close
 
 LoadSettings() {
     global WIN_W, WIN_H, SplitH, PANE_H, PAD, TAB_H, TOOL_H, MAX_WIN_H
@@ -77,13 +82,33 @@ LoadSettings() {
 }
 
 ; ============================================================
-;  BUILD GUI
+;  COLOUR THEME  (optional — reads from ColorThemeIntegrator)
 ; ============================================================
-LoadSettings()
+; If you have the ColorThemeIntegrator tool, put the path to the ini file.
+; Note CTI is part of the suite at github.com/kunkel321/autocorrect2
+
+themeFile   := "..\AutoCorrect2\Data\colorThemeSettings.ini"
+fontColor   := "Default"
+listColor   := "Default"
+formColor   := "Default"
+; fontColor   := "223C99"
+; listColor   := "FFFFFF"
+; formColor   := "EFEFEF"
+if FileExist(themeFile) {
+    fontColor  := IniRead(themeFile, "ColorSettings", "fontColor", "223C99")
+    listColor  := IniRead(themeFile, "ColorSettings", "listColor", "FFFFFF")
+    formColor  := IniRead(themeFile, "ColorSettings", "formColor", "EFEFEF")
+}
+; Strip any leading c/C, #, or 0x prefix that CTI might store, leaving bare 6-char hex.
+fontColor  := RegExReplace(fontColor, "^(0x|#|c|C)", "")
+listColor  := RegExReplace(listColor, "^(0x|#|c|C)", "")
+formColor  := RegExReplace(formColor, "^(0x|#|c|C)", "")
+; Font colour string for SetFont ("cRRGGBB")
+fontColorOpt := "c" fontColor
 
 g := Gui("+Resize +MinSize520x400", "Text Toolbox")
-g.BackColor := "F0F0F0"
-g.SetFont("s9", "Segoe UI")
+g.BackColor := formColor
+g.SetFont("s9 " fontColorOpt, "Segoe UI")
 
 ; ---------- TAB AREA (top, fixed position) -------------------
 ; LbNav and Tabs sit at y=PAD and never move.
@@ -119,7 +144,17 @@ BuildTab_NGrams()
 Tabs.UseTab(0)
 
 ; ---------- Toolbar row (below tab area, fixed position) -----
-toolY := PAD + TAB_H + PAD
+; ---------- Configs toolbar row (first row, just below tab area) ------
+cfg_Y  := PAD + TAB_H + TOOL_PAD
+ConfigsDir := DataDir
+g.Add("Text",   "x10          y" (cfg_Y+2) " w82",     "Configurations:")
+global CboConfig   := g.Add("ComboBox", "x94   y" cfg_Y " w300 h22 R12", [])
+global BtnCfgSave  := g.Add("Button",   "x400  y" cfg_Y " w90 h22",  "Save config")
+global BtnCfgLoad  := g.Add("Button",   "x494  y" cfg_Y " w90 h22",  "Load config")
+global BtnCfgDel   := g.Add("Button",   "x588  y" cfg_Y " w90 h22",  "Delete config")
+
+; ---------- Button bar (second row, above the panes) ------------------
+toolY := cfg_Y + TOOL_H + TOOL_PAD
 g.Add("Text",    "x10          y" (toolY+2) " w55",      "Input:")
 BtnPaste  := g.Add("Button",   "x68          y" toolY  " w52 h22", "Paste")
 BtnClrIn  := g.Add("Button",   "x122         y" toolY  " w52 h22", "Clear")
@@ -132,8 +167,6 @@ g.Add("Text",    "x502         y" (toolY+2) " w4",       "|")
 BtnUndo   := g.Add("Button",   "x510         y" toolY  " w56 h22", "Undo")
 BtnRedo   := g.Add("Button",   "x568         y" toolY  " w56 h22", "Redo")
 BtnHelp   := g.Add("Button",   "x630         y" toolY  " w26 h22", "?")
-
-; ---------- Dual panes + mid-strip (positions set by LayoutPanes) ---
 EditIn   := g.Add("Edit",   "x0 y0 w10 h10 Multi VScroll Wrap", "")
 EditOut  := g.Add("Edit",   "x0 y0 w10 h10 Multi VScroll Wrap", "")
 BtnApply := g.Add("Button", "x0 y0 w10 h10 Default", "Apply >")
@@ -150,6 +183,9 @@ BtnUndo.OnEvent("Click",   OnUndo)
 BtnRedo.OnEvent("Click",   OnRedo)
 BtnSwap.OnEvent("Click",   OnSwap)
 BtnCopy.OnEvent("Click",   OnCopyOutput)
+BtnCfgSave.OnEvent("Click", OnConfigSave)
+BtnCfgLoad.OnEvent("Click", OnConfigLoad)
+BtnCfgDel.OnEvent("Click",  OnConfigDelete)
 BtnHelp.OnEvent("Click",   (*) => ShowHelp(0))   ; 0 = general overview
 LbNav.OnEvent("Change",    OnNavChange)
 g.OnEvent("Size",          OnGuiSize)
@@ -160,10 +196,20 @@ g.OnEvent("Close",         OnClose)
 #HotIf WinActive("Text Toolbox ahk_class AutoHotkeyGUI") && !EditHasFocus()
 ^z:: OnUndo()
 ^y:: OnRedo()
+#HotIf WinActive("Text Toolbox ahk_class AutoHotkeyGUI") && PaneHasFocus()
++!Up::   MoveLinesInPane(-1)
++!Down:: MoveLinesInPane(1)
 #HotIf WinActive("Text Toolbox ahk_class AutoHotkeyGUI")
 Esc:: OnClose(g)
 F1::  ShowHelp(Tabs.Value)   ; F1 = help for the current tab
 #HotIf
+
+; Returns true when focus is in the main Input or Output pane specifically.
+PaneHasFocus() {
+    global EditIn, EditOut
+    focHwnd := ControlGetFocus("A")
+    return (focHwnd = EditIn.Hwnd || focHwnd = EditOut.Hwnd)
+}
 
 ; Returns true when the focused control is an Edit (so ^z/^y stay native inside edit boxes)
 EditHasFocus() {
@@ -173,6 +219,106 @@ EditHasFocus() {
         return (cls = "Edit" || cls = "RichEdit20W" || cls = "RICHEDIT50W")
     }
     return false
+}
+
+; Move the line(s) touched by the current selection up (-1) or down (+1) in the focused pane.
+; Whole-line blocks move as a unit; selection tracks with the moved text.
+MoveLinesInPane(dir) {
+    global EditIn, EditOut
+    focHwnd := ControlGetFocus("A")
+    ctrl := (focHwnd = EditIn.Hwnd) ? EditIn : EditOut
+
+    txt := ctrl.Value
+    lines := StrSplit(txt, "`n")
+    if lines.Length < 2
+        return
+
+    ; Get selection character positions via EM_GETSEL
+    selStart := 0, selEnd := 0
+    DllCall("user32\SendMessage", "Ptr", ctrl.Hwnd,
+            "UInt", 0x00B0,   ; EM_GETSEL
+            "Ptr*", &selStart, "Ptr*", &selEnd)
+
+    ; Build cumulative start-of-line offsets.
+    ; EM_GETSEL counts CRLF as 2 chars, but AHK .Value uses LF-only.
+    ; Add +2 per line (for \r\n) to match what EM_GETSEL returns.
+    lineStart := []
+    pos := 0
+    loop lines.Length {
+        lineStart.Push(pos)
+        pos += StrLen(lines[A_Index]) + 2   ; +2 for \r\n (CRLF as counted by EM_GETSEL)
+    }
+
+    ; Find firstLine: line whose range contains selStart
+    firstLine := 1
+    loop lines.Length {
+        i := A_Index
+        lineEnd := lineStart[i] + StrLen(lines[i])
+        if (lineStart[i] <= selStart && selStart <= lineEnd)
+            firstLine := i
+    }
+
+    ; Find lastLine: last line that selEnd touches
+    lastLine := firstLine
+    loop lines.Length {
+        i := A_Index
+        if (i <= firstLine)
+            continue
+        if (lineStart[i] < selEnd)
+            lastLine := i
+    }
+    ; If selEnd lands exactly at start of a line, back off one
+    loop lines.Length {
+        i := A_Index
+        if (i > 1 && selEnd = lineStart[i])
+            lastLine := i - 1
+    }
+    firstLine := Max(firstLine, 1)
+    lastLine  := Min(lastLine, lines.Length)
+
+    ; Boundary check
+    if (dir = -1 && firstLine = 1)
+        return
+    if (dir = 1  && lastLine = lines.Length)
+        return
+
+    PushUndo(EditIn.Value, EditOut.Value)
+
+    ; Extract block, remove, re-insert
+    block := []
+    loop lastLine - firstLine + 1
+        block.Push(lines[firstLine + A_Index - 1])
+
+    loop block.Length
+        lines.RemoveAt(firstLine)
+
+    insertAt := (dir = -1) ? firstLine - 1 : firstLine + 1
+
+    loop block.Length
+        lines.InsertAt(insertAt + A_Index - 1, block[A_Index])
+
+    ; Rebuild text
+    newTxt := ""
+    loop lines.Length
+        newTxt .= lines[A_Index] (A_Index < lines.Length ? "`n" : "")
+    ctrl.Value := newTxt
+
+    ; Recompute lineStart offsets on the new line array
+    newLineStart := []
+    pos := 0
+    loop lines.Length {
+        newLineStart.Push(pos)
+        pos += StrLen(lines[A_Index]) + 2   ; +2 for \r\n to match EM_GETSEL
+    }
+
+    newFirst    := insertAt
+    newLast     := insertAt + block.Length - 1
+    newSelStart := newLineStart[newFirst]
+    newSelEnd   := newLineStart[newLast] + StrLen(lines[newLast])
+
+    DllCall("user32\SendMessage", "Ptr", ctrl.Hwnd,
+            "UInt", 0x00B1,   ; EM_SETSEL
+            "Ptr",  newSelStart, "Ptr", newSelEnd)
 }
 
 ; ---------- RESTORE last tab & do initial layout ------------
@@ -191,23 +337,69 @@ InitialLayout() {
     LayoutPanes(cW, cH)
     LoadHistory()
     LoadFavorites()
+    LoadDefaults()
+    LoadConfigList()
+    ApplyThemeColors()
     if (AUTO_PASTE_CLIPBOARD && A_Clipboard != "")
         EditIn.Value := A_Clipboard
 }
 
-; ============================================================
-;  PANE LAYOUT  — called on init and every resize
-; ============================================================
+; Apply listColor background + fontColor to every control that needs it.
+; Called once from InitialLayout() after all tab controls exist.
+; Colors always apply — defaults used when theme file not found.
+ApplyThemeColors() {
+    global listColor, fontColor
+    global EditIn, EditOut, LbNav
+    global CboFind, CboRepl, CboFave, CboConfig
+    global LvCsv, LvStats, LvNgrams, EditCmpRight
+    global EditSortDelim, NumTrimL, NumTrimR
+    global EditRmDelim1, EditRmDelim2, EditRmDelim3
+    global EditExtLinePattern, EditExtPattern, EditExtDel1, EditExtDel2, NumExtNth
+    global NumWrapCol, EditBullet, NumIndent
+    global NumCtrStart, NumCtrStep, EditCtrSep
+    global EditPadChar
+
+    lc := listColor
+    fc := fontColor
+
+    ; Main pane edits
+    for ctrl in [EditIn, EditOut]
+        ctrl.Opt("Background" lc " c" fc)
+
+    ; Navigation listbox
+    LbNav.Opt("Background" lc " c" fc)
+
+    ; Find/Replace combos, Favorites combo, and Configs combo
+    for ctrl in [CboFind, CboRepl, CboFave, CboConfig]
+        ctrl.Opt("Background" lc " c" fc)
+
+    ; ListViews — background colour only (column headers stay system colour)
+    for ctrl in [LvCsv, LvStats, LvNgrams]
+        ctrl.Opt("Background" lc " c" fc)
+
+    ; Compare right-hand edit
+    EditCmpRight.Opt("Background" lc " c" fc)
+
+    ; Small edit/spinner controls across tabs
+    for ctrl in [EditSortDelim,
+                 NumTrimL, NumTrimR,
+                 EditRmDelim1, EditRmDelim2, EditRmDelim3,
+                 EditExtLinePattern, EditExtPattern, EditExtDel1, EditExtDel2, NumExtNth,
+                 NumWrapCol, EditBullet, NumIndent,
+                 NumCtrStart, NumCtrStep, EditCtrSep,
+                 EditPadChar]
+        ctrl.Opt("Background" lc " c" fc)
+}
 ; ============================================================
 ;  PANE LAYOUT  — called on init and every resize
 ;  Tab area is fixed at top; only the edit panes stretch.
 ; ============================================================
 LayoutPanes(W, H) {
-    global PAD, TAB_H, TOOL_H, PANE_H, SplitH, STRIP_W, LB_W
+    global PAD, TAB_H, TOOL_H, TOOL_PAD, PANE_H, SplitH, STRIP_W, LB_W
     global EditIn, EditOut, BtnApply, BtnSwap
 
     innerW := W - PAD*2
-    paneY  := PAD + TAB_H + PAD + TOOL_H + PAD
+    paneY  := PAD + TAB_H + TOOL_PAD + TOOL_H + TOOL_PAD + TOOL_H + TOOL_PAD
 
     ; Panes fill all remaining vertical space
     PANE_H := Max(H - paneY - PAD, 80)
@@ -414,15 +606,15 @@ BuildTab_FindReplace() {
 
     ; ── Favorites row ────────────────────────────────────────────────────
     g.Add("Text", "x" (TX+8) " y" (TY+8), "Favorites:")
-    global CboFave   := g.Add("ComboBox", "x" (TX+72) " yp-3 w290", [])
+    global CboFave   := g.Add("ComboBox", "x" (TX+72) " yp-3 w290 R12", [])
     global BtnFavSave := g.Add("Button",  "x+8 yp w80 h22", "Save fave")
     global BtnFavDel  := g.Add("Button",  "x+6 yp w80 h22", "Delete fave")
 
     ; ── Find / Replace ───────────────────────────────────────────────────
     g.Add("Text", "x" (TX+8) " y+10", "Find:")
-    global CboFind := g.Add("ComboBox", "x" (TX+8) " y+4 w380", [])
+    global CboFind := g.Add("ComboBox", "x" (TX+8) " y+4 w380 R12", [])
     g.Add("Text", "x" (TX+8) " y+8", "Replace with:")
-    global CboRepl := g.Add("ComboBox", "x" (TX+8) " y+4 w380", [])
+    global CboRepl := g.Add("ComboBox", "x" (TX+8) " y+4 w380 R12", [])
     global ChkFRCase  := g.Add("Checkbox", "x" (TX+8) " y+10", "Case sensitive")
     global ChkFRRegex := g.Add("Checkbox", "x" (TX+8) " y+4",  "Use regex")
     global ChkFRAll   := g.Add("Checkbox", "x" (TX+8) " y+4 Checked", "Replace all occurrences")
@@ -942,8 +1134,8 @@ SanitizeFaveTitle(t) {
 RebuildFaveCombo() {
     global CboFave, FaveNames
     CboFave.Delete()
-    for name in FaveNames
-        CboFave.Add([name])
+    if FaveNames.Length
+        CboFave.Add(FaveNames)
 }
 
 ; Known non-favorite INI sections — excluded when scanning for favorites.
@@ -1088,6 +1280,350 @@ OnFaveDelete(*) {
     SetTimer(() => ToolTip("", , , 4), -2000)
 }
 
+; ============================================================
+;  TAB CONTROL STATE  (sticky defaults → Data\ttDefaults.ini)
+; ============================================================
+; Radio groups are saved as a single integer (1-based index of selected radio).
+; Helper: return index of first checked radio in a list, or 1 if none checked.
+_SelectedRadio(radios*) {
+    for i, r in radios
+        if r.Value
+            return i
+    return 1
+}
+
+SaveDefaults() {
+    global DefaultsFile
+    ; ── Case ──────────────────────────────────────────────────────────────
+    global CaseR1, CaseR2, CaseR3, CaseR4, CaseR5, CaseR6
+    global CaseR7, CaseR8, CaseR9, CaseR10, CaseR11, CaseR12
+    IniWrite(_SelectedRadio(CaseR1,CaseR2,CaseR3,CaseR4,CaseR5,CaseR6,
+                            CaseR7,CaseR8,CaseR9,CaseR10,CaseR11,CaseR12),
+             DefaultsFile, "Tab_Case", "Radio")
+
+    ; ── Sort ──────────────────────────────────────────────────────────────
+    global ScopeR1,ScopeR2,ScopeR3,ScopeR4,ScopeR5,ScopeR6
+    global SortR1,SortR2,SortR3,SortR4,SortR5,SortR6,SortR7,SortR8
+    global ChkSortDupe, ChkSortTrim, DdlSortKey, EditSortDelim, RevR1, RevR2
+    IniWrite(_SelectedRadio(ScopeR1,ScopeR2,ScopeR3,ScopeR4,ScopeR5,ScopeR6),
+             DefaultsFile, "Tab_Sort", "Scope")
+    IniWrite(_SelectedRadio(SortR1,SortR2,SortR3,SortR4,SortR5,SortR6,SortR7,SortR8),
+             DefaultsFile, "Tab_Sort", "Operation")
+    IniWrite(ChkSortDupe.Value,   DefaultsFile, "Tab_Sort", "RemoveDupes")
+    IniWrite(ChkSortTrim.Value,   DefaultsFile, "Tab_Sort", "TrimWhitespace")
+    IniWrite(DdlSortKey.Value,    DefaultsFile, "Tab_Sort", "SortKey")
+    IniWrite(EditSortDelim.Value, DefaultsFile, "Tab_Sort", "SortDelim")
+    IniWrite(_SelectedRadio(RevR1, RevR2), DefaultsFile, "Tab_Sort", "ReverseMode")
+
+    ; ── Find/Replace ──────────────────────────────────────────────────────
+    global ChkFRCase, ChkFRRegex, ChkFRAll
+    IniWrite(ChkFRCase.Value,  DefaultsFile, "Tab_FindReplace", "CaseSensitive")
+    IniWrite(ChkFRRegex.Value, DefaultsFile, "Tab_FindReplace", "UseRegex")
+    IniWrite(ChkFRAll.Value,   DefaultsFile, "Tab_FindReplace", "ReplaceAll")
+
+    ; ── Remove ────────────────────────────────────────────────────────────
+    global ChkRmBlank,ChkRmDupe,ChkRmLead,ChkRmTrail,ChkRmHTML,ChkRmBBCode,ChkRmNonASCII
+    global NumTrimL, NumTrimR
+    global DdlRmBeforeAfter, EditRmDelim1, ChkRmKeepDelim1
+    global EditRmDelim2, EditRmDelim3, ChkRmKeepDelim2, ChkRmKeepDelim3
+    IniWrite(ChkRmBlank.Value,    DefaultsFile, "Tab_Remove", "BlankLines")
+    IniWrite(ChkRmDupe.Value,     DefaultsFile, "Tab_Remove", "DupeLines")
+    IniWrite(ChkRmLead.Value,     DefaultsFile, "Tab_Remove", "LeadSpace")
+    IniWrite(ChkRmTrail.Value,    DefaultsFile, "Tab_Remove", "TrailSpace")
+    IniWrite(ChkRmHTML.Value,     DefaultsFile, "Tab_Remove", "HTML")
+    IniWrite(ChkRmBBCode.Value,   DefaultsFile, "Tab_Remove", "BBCode")
+    IniWrite(ChkRmNonASCII.Value, DefaultsFile, "Tab_Remove", "NonASCII")
+    IniWrite(NumTrimL.Value,      DefaultsFile, "Tab_Remove", "TrimL")
+    IniWrite(NumTrimR.Value,      DefaultsFile, "Tab_Remove", "TrimR")
+    IniWrite(DdlRmBeforeAfter.Value, DefaultsFile, "Tab_Remove", "BeforeAfter")
+    IniWrite(EditRmDelim1.Value,  DefaultsFile, "Tab_Remove", "Delim1")
+    IniWrite(ChkRmKeepDelim1.Value, DefaultsFile, "Tab_Remove", "KeepDelim1")
+    IniWrite(EditRmDelim2.Value,  DefaultsFile, "Tab_Remove", "Delim2Start")
+    IniWrite(EditRmDelim3.Value,  DefaultsFile, "Tab_Remove", "Delim2End")
+    IniWrite(ChkRmKeepDelim2.Value, DefaultsFile, "Tab_Remove", "KeepDelim2Start")
+    IniWrite(ChkRmKeepDelim3.Value, DefaultsFile, "Tab_Remove", "KeepDelim2End")
+
+    ; ── Extract ───────────────────────────────────────────────────────────
+    global ExtR1,ExtR2,ExtR3,ExtR4,ExtR5,ExtR6
+    global EditExtLinePattern, EditExtPattern, EditExtDel1, EditExtDel2, NumExtNth
+    global ChkExtKeepDel1, ChkExtKeepDel2, ChkExtUnique, ChkExtPerLine, ChkExtSemicolon
+    IniWrite(_SelectedRadio(ExtR1,ExtR2,ExtR3,ExtR4,ExtR5,ExtR6),
+             DefaultsFile, "Tab_Extract", "Radio")
+    IniWrite(EditExtLinePattern.Value, DefaultsFile, "Tab_Extract", "LinePattern")
+    IniWrite(EditExtPattern.Value,     DefaultsFile, "Tab_Extract", "CustomPattern")
+    IniWrite(EditExtDel1.Value,        DefaultsFile, "Tab_Extract", "Del1")
+    IniWrite(EditExtDel2.Value,        DefaultsFile, "Tab_Extract", "Del2")
+    IniWrite(NumExtNth.Value,          DefaultsFile, "Tab_Extract", "Nth")
+    IniWrite(ChkExtKeepDel1.Value,     DefaultsFile, "Tab_Extract", "KeepDel1")
+    IniWrite(ChkExtKeepDel2.Value,     DefaultsFile, "Tab_Extract", "KeepDel2")
+    IniWrite(ChkExtUnique.Value,       DefaultsFile, "Tab_Extract", "Unique")
+    IniWrite(ChkExtPerLine.Value,      DefaultsFile, "Tab_Extract", "PerLine")
+    IniWrite(ChkExtSemicolon.Value,    DefaultsFile, "Tab_Extract", "Semicolon")
+
+    ; ── Wrap/Indent ───────────────────────────────────────────────────────
+    global WrapRN, WrapRG, WrapR2, NumWrapCol
+    global ChkBullet, EditBullet, ChkSkipCaps
+    global IndentRN, IndentRG, IndentR2, NumIndent
+    IniWrite(_SelectedRadio(WrapRN,WrapRG,WrapR2), DefaultsFile, "Tab_Wrap", "WrapMode")
+    IniWrite(NumWrapCol.Value,   DefaultsFile, "Tab_Wrap", "WrapCol")
+    IniWrite(ChkBullet.Value,    DefaultsFile, "Tab_Wrap", "Bullet")
+    IniWrite(EditBullet.Value,   DefaultsFile, "Tab_Wrap", "BulletChar")
+    IniWrite(ChkSkipCaps.Value,  DefaultsFile, "Tab_Wrap", "SkipCaps")
+    IniWrite(_SelectedRadio(IndentRN,IndentRG,IndentR2), DefaultsFile, "Tab_Wrap", "IndentMode")
+    IniWrite(NumIndent.Value,    DefaultsFile, "Tab_Wrap", "IndentSpaces")
+
+    ; ── Counter ───────────────────────────────────────────────────────────
+    global NumCtrStart, NumCtrStep, EditCtrSep, ChkCtrAlign
+    IniWrite(NumCtrStart.Value,  DefaultsFile, "Tab_Counter", "Start")
+    IniWrite(NumCtrStep.Value,   DefaultsFile, "Tab_Counter", "Step")
+    IniWrite(EditCtrSep.Value,   DefaultsFile, "Tab_Counter", "Separator")
+    IniWrite(ChkCtrAlign.Value,  DefaultsFile, "Tab_Counter", "RightAlign")
+
+    ; ── Padding ───────────────────────────────────────────────────────────
+    global PadR1, PadR2, PadR3, EditPadChar
+    IniWrite(_SelectedRadio(PadR1,PadR2,PadR3), DefaultsFile, "Tab_Padding", "Align")
+    IniWrite(EditPadChar.Value,  DefaultsFile, "Tab_Padding", "PadChar")
+
+    ; ── Compare ───────────────────────────────────────────────────────────
+    global CmpR1, CmpR2, CmpR3, ChkCmpDupe, ChkCmpSort
+    IniWrite(_SelectedRadio(CmpR1,CmpR2,CmpR3), DefaultsFile, "Tab_Compare", "Radio")
+    IniWrite(ChkCmpDupe.Value,   DefaultsFile, "Tab_Compare", "RemoveDupes")
+    IniWrite(ChkCmpSort.Value,   DefaultsFile, "Tab_Compare", "Alphabetize")
+
+    ; ── N-Grams ───────────────────────────────────────────────────────────
+    global DdlNgramSize
+    IniWrite(DdlNgramSize.Value, DefaultsFile, "Tab_NGrams", "GroupSize")
+}
+
+LoadDefaults() {
+    global DefaultsFile
+
+    ; ── Case ──────────────────────────────────────────────────────────────
+    global CaseR1,CaseR2,CaseR3,CaseR4,CaseR5,CaseR6
+    global CaseR7,CaseR8,CaseR9,CaseR10,CaseR11,CaseR12
+    caseRadios := [CaseR1,CaseR2,CaseR3,CaseR4,CaseR5,CaseR6,
+                   CaseR7,CaseR8,CaseR9,CaseR10,CaseR11,CaseR12]
+    n := Integer(IniRead(DefaultsFile, "Tab_Case", "Radio", 1))
+    if (n >= 1 && n <= caseRadios.Length)
+        caseRadios[n].Value := 1
+
+    ; ── Sort ──────────────────────────────────────────────────────────────
+    global ScopeR1,ScopeR2,ScopeR3,ScopeR4,ScopeR5,ScopeR6
+    global SortR1,SortR2,SortR3,SortR4,SortR5,SortR6,SortR7,SortR8
+    global ChkSortDupe, ChkSortTrim, DdlSortKey, EditSortDelim, RevR1, RevR2
+    scopeRadios := [ScopeR1,ScopeR2,ScopeR3,ScopeR4,ScopeR5,ScopeR6]
+    sortRadios  := [SortR1,SortR2,SortR3,SortR4,SortR5,SortR6,SortR7,SortR8]
+    revRadios   := [RevR1, RevR2]
+    n := Integer(IniRead(DefaultsFile, "Tab_Sort", "Scope", 1))
+    if (n >= 1 && n <= scopeRadios.Length)
+        scopeRadios[n].Value := 1
+    n := Integer(IniRead(DefaultsFile, "Tab_Sort", "Operation", 1))
+    if (n >= 1 && n <= sortRadios.Length)
+        sortRadios[n].Value := 1
+    ChkSortDupe.Value   := Integer(IniRead(DefaultsFile, "Tab_Sort", "RemoveDupes",    0))
+    ChkSortTrim.Value   := Integer(IniRead(DefaultsFile, "Tab_Sort", "TrimWhitespace", 0))
+    DdlSortKey.Value    := Integer(IniRead(DefaultsFile, "Tab_Sort", "SortKey",        1))
+    EditSortDelim.Value := IniRead(DefaultsFile, "Tab_Sort", "SortDelim", "-")
+    n := Integer(IniRead(DefaultsFile, "Tab_Sort", "ReverseMode", 1))
+    if (n >= 1 && n <= revRadios.Length)
+        revRadios[n].Value := 1
+    UpdateSortUI()
+
+    ; ── Find/Replace ──────────────────────────────────────────────────────
+    global ChkFRCase, ChkFRRegex, ChkFRAll
+    ChkFRCase.Value  := Integer(IniRead(DefaultsFile, "Tab_FindReplace", "CaseSensitive", 0))
+    ChkFRRegex.Value := Integer(IniRead(DefaultsFile, "Tab_FindReplace", "UseRegex",      0))
+    ChkFRAll.Value   := Integer(IniRead(DefaultsFile, "Tab_FindReplace", "ReplaceAll",    1))
+
+    ; ── Remove ────────────────────────────────────────────────────────────
+    global ChkRmBlank,ChkRmDupe,ChkRmLead,ChkRmTrail,ChkRmHTML,ChkRmBBCode,ChkRmNonASCII
+    global NumTrimL, NumTrimR
+    global DdlRmBeforeAfter, EditRmDelim1, ChkRmKeepDelim1
+    global EditRmDelim2, EditRmDelim3, ChkRmKeepDelim2, ChkRmKeepDelim3
+    ChkRmBlank.Value    := Integer(IniRead(DefaultsFile, "Tab_Remove", "BlankLines", 0))
+    ChkRmDupe.Value     := Integer(IniRead(DefaultsFile, "Tab_Remove", "DupeLines",  0))
+    ChkRmLead.Value     := Integer(IniRead(DefaultsFile, "Tab_Remove", "LeadSpace",  0))
+    ChkRmTrail.Value    := Integer(IniRead(DefaultsFile, "Tab_Remove", "TrailSpace", 0))
+    ChkRmHTML.Value     := Integer(IniRead(DefaultsFile, "Tab_Remove", "HTML",       0))
+    ChkRmBBCode.Value   := Integer(IniRead(DefaultsFile, "Tab_Remove", "BBCode",     0))
+    ChkRmNonASCII.Value := Integer(IniRead(DefaultsFile, "Tab_Remove", "NonASCII",   0))
+    NumTrimL.Value      := IniRead(DefaultsFile, "Tab_Remove", "TrimL", "0")
+    NumTrimR.Value      := IniRead(DefaultsFile, "Tab_Remove", "TrimR", "0")
+    DdlRmBeforeAfter.Value := Integer(IniRead(DefaultsFile, "Tab_Remove", "BeforeAfter", 1))
+    EditRmDelim1.Value  := IniRead(DefaultsFile, "Tab_Remove", "Delim1",       "")
+    ChkRmKeepDelim1.Value := Integer(IniRead(DefaultsFile, "Tab_Remove", "KeepDelim1", 0))
+    EditRmDelim2.Value  := IniRead(DefaultsFile, "Tab_Remove", "Delim2Start",  "")
+    EditRmDelim3.Value  := IniRead(DefaultsFile, "Tab_Remove", "Delim2End",    "")
+    ChkRmKeepDelim2.Value := Integer(IniRead(DefaultsFile, "Tab_Remove", "KeepDelim2Start", 0))
+    ChkRmKeepDelim3.Value := Integer(IniRead(DefaultsFile, "Tab_Remove", "KeepDelim2End",   0))
+
+    ; ── Extract ───────────────────────────────────────────────────────────
+    global ExtR1,ExtR2,ExtR3,ExtR4,ExtR5,ExtR6
+    global EditExtLinePattern, EditExtPattern, EditExtDel1, EditExtDel2, NumExtNth
+    global ChkExtKeepDel1, ChkExtKeepDel2, ChkExtUnique, ChkExtPerLine, ChkExtSemicolon
+    extRadios := [ExtR1,ExtR2,ExtR3,ExtR4,ExtR5,ExtR6]
+    n := Integer(IniRead(DefaultsFile, "Tab_Extract", "Radio", 1))
+    if (n >= 1 && n <= extRadios.Length)
+        extRadios[n].Value := 1
+    EditExtLinePattern.Value := IniRead(DefaultsFile, "Tab_Extract", "LinePattern",    "")
+    EditExtPattern.Value     := IniRead(DefaultsFile, "Tab_Extract", "CustomPattern",  "")
+    EditExtDel1.Value        := IniRead(DefaultsFile, "Tab_Extract", "Del1",           "")
+    EditExtDel2.Value        := IniRead(DefaultsFile, "Tab_Extract", "Del2",           "")
+    NumExtNth.Value          := IniRead(DefaultsFile, "Tab_Extract", "Nth",            "1")
+    ChkExtKeepDel1.Value     := Integer(IniRead(DefaultsFile, "Tab_Extract", "KeepDel1",  0))
+    ChkExtKeepDel2.Value     := Integer(IniRead(DefaultsFile, "Tab_Extract", "KeepDel2",  0))
+    ChkExtUnique.Value       := Integer(IniRead(DefaultsFile, "Tab_Extract", "Unique",    0))
+    ChkExtPerLine.Value      := Integer(IniRead(DefaultsFile, "Tab_Extract", "PerLine",   1))
+    ChkExtSemicolon.Value    := Integer(IniRead(DefaultsFile, "Tab_Extract", "Semicolon", 0))
+    UpdateExtractUI()
+
+    ; ── Wrap/Indent ───────────────────────────────────────────────────────
+    global WrapRN, WrapRG, WrapR2, NumWrapCol
+    global ChkBullet, EditBullet, ChkSkipCaps
+    global IndentRN, IndentRG, IndentR2, NumIndent
+    wrapRadios   := [WrapRN, WrapRG, WrapR2]
+    indentRadios := [IndentRN, IndentRG, IndentR2]
+    n := Integer(IniRead(DefaultsFile, "Tab_Wrap", "WrapMode", 1))
+    if (n >= 1 && n <= wrapRadios.Length)
+        wrapRadios[n].Value := 1
+    NumWrapCol.Value  := IniRead(DefaultsFile, "Tab_Wrap", "WrapCol",      "80")
+    ChkBullet.Value   := Integer(IniRead(DefaultsFile, "Tab_Wrap", "Bullet",    0))
+    EditBullet.Value  := IniRead(DefaultsFile, "Tab_Wrap", "BulletChar",   Chr(0x2022))
+    ChkSkipCaps.Value := Integer(IniRead(DefaultsFile, "Tab_Wrap", "SkipCaps",  0))
+    n := Integer(IniRead(DefaultsFile, "Tab_Wrap", "IndentMode", 1))
+    if (n >= 1 && n <= indentRadios.Length)
+        indentRadios[n].Value := 1
+    NumIndent.Value   := IniRead(DefaultsFile, "Tab_Wrap", "IndentSpaces", "4")
+
+    ; ── Counter ───────────────────────────────────────────────────────────
+    global NumCtrStart, NumCtrStep, EditCtrSep, ChkCtrAlign
+    NumCtrStart.Value  := IniRead(DefaultsFile, "Tab_Counter", "Start",      "1")
+    NumCtrStep.Value   := IniRead(DefaultsFile, "Tab_Counter", "Step",       "1")
+    EditCtrSep.Value   := IniRead(DefaultsFile, "Tab_Counter", "Separator",  ". ")
+    ChkCtrAlign.Value  := Integer(IniRead(DefaultsFile, "Tab_Counter", "RightAlign", 0))
+
+    ; ── Padding ───────────────────────────────────────────────────────────
+    global PadR1, PadR2, PadR3, EditPadChar
+    padRadios := [PadR1, PadR2, PadR3]
+    n := Integer(IniRead(DefaultsFile, "Tab_Padding", "Align", 1))
+    if (n >= 1 && n <= padRadios.Length)
+        padRadios[n].Value := 1
+    EditPadChar.Value := IniRead(DefaultsFile, "Tab_Padding", "PadChar", " ")
+
+    ; ── Compare ───────────────────────────────────────────────────────────
+    global CmpR1, CmpR2, CmpR3, ChkCmpDupe, ChkCmpSort
+    cmpRadios := [CmpR1, CmpR2, CmpR3]
+    n := Integer(IniRead(DefaultsFile, "Tab_Compare", "Radio", 3))   ; default = "In both"
+    if (n >= 1 && n <= cmpRadios.Length)
+        cmpRadios[n].Value := 1
+    ChkCmpDupe.Value := Integer(IniRead(DefaultsFile, "Tab_Compare", "RemoveDupes",  0))
+    ChkCmpSort.Value := Integer(IniRead(DefaultsFile, "Tab_Compare", "Alphabetize",  0))
+
+    ; ── N-Grams ───────────────────────────────────────────────────────────
+    global DdlNgramSize
+    DdlNgramSize.Value := Integer(IniRead(DefaultsFile, "Tab_NGrams", "GroupSize", 2))
+}
+
+; ============================================================
+;  CONFIGURATIONS  (Data\tt*.ini files)
+; ============================================================
+
+; Populate CboConfig from tt*.ini files in the Data folder.
+; Excludes ttSettings.ini (favorites/history) and ttDefaults.ini (live defaults).
+LoadConfigList() {
+    global ConfigsDir, CboConfig
+    static excluded := Map("ttSettings.ini", 1, "ttDefaults.ini", 1)
+    CboConfig.Delete()
+    if !DirExist(ConfigsDir)
+        return
+    names := []
+    loop files ConfigsDir "\tt*.ini" {
+        if excluded.Has(A_LoopFileName)
+            continue
+        names.Push(RegExReplace(A_LoopFileName, "^tt|\.ini$", ""))
+    }
+    if names.Length
+        CboConfig.Add(names)
+}
+
+; Save current tab control states as a named config file.
+OnConfigSave(*) {
+    global ConfigsDir, CboConfig, DefaultsFile
+    name := Trim(CboConfig.Text)
+    if (name = "") {
+        MsgBox("Please type a name for this configuration.", "Save Config", 48)
+        return
+    }
+    ; Strip characters invalid in filenames
+    name := RegExReplace(name, '[\\/:*?"<>|]', "")
+    name := Trim(name)
+    if (name = "") {
+        MsgBox("The name contains only invalid characters.`nPlease use a different name.", "Save Config", 48)
+        return
+    }
+    if !DirExist(ConfigsDir)
+        DirCreate(ConfigsDir)
+    destFile := ConfigsDir "\tt" name ".ini"
+    if FileExist(destFile) {
+        ans := MsgBox('A config named "' name '" already exists.`nOverwrite it?', "Save Config", 52)
+        if (ans != "Yes")
+            return
+    }
+    ; Write current state to DefaultsFile first, then copy to config
+    SaveDefaults()
+    FileCopy(DefaultsFile, destFile, true)
+    LoadConfigList()
+    CboConfig.Text := name
+    ToolTip("Config saved: " name, , , 4)
+    SetTimer(() => ToolTip("", , , 4), -2000)
+}
+
+; Load a named config file into the tab controls.
+OnConfigLoad(*) {
+    global ConfigsDir, CboConfig, DefaultsFile
+    name := Trim(CboConfig.Text)
+    if (name = "") {
+        MsgBox("Please select or type a configuration name.", "Load Config", 48)
+        return
+    }
+    srcFile := ConfigsDir "\tt" name ".ini"
+    if !FileExist(srcFile) {
+        MsgBox('Config "' name '" not found.`nSave it first, or check the name.', "Load Config", 48)
+        return
+    }
+    ; Swap DefaultsFile pointer temporarily to load from the config file
+    global DefaultsFile
+    origDefaults := DefaultsFile
+    DefaultsFile := srcFile
+    LoadDefaults()
+    DefaultsFile := origDefaults
+    ToolTip("Config loaded: " name, , , 4)
+    SetTimer(() => ToolTip("", , , 4), -2000)
+}
+
+; Delete the selected config file.
+OnConfigDelete(*) {
+    global ConfigsDir, CboConfig
+    name := Trim(CboConfig.Text)
+    if (name = "") {
+        MsgBox("No configuration is selected.", "Delete Config", 48)
+        return
+    }
+    destFile := ConfigsDir "\tt" name ".ini"
+    if !FileExist(destFile) {
+        MsgBox('Config "' name '" not found.', "Delete Config", 48)
+        return
+    }
+    ans := MsgBox('Delete config "' name '"?', "Delete Config", 52)
+    if (ans != "Yes")
+        return
+    FileDelete(destFile)
+    LoadConfigList()
+    CboConfig.Text := ""
+    ToolTip("Config deleted.", , , 4)
+    SetTimer(() => ToolTip("", , , 4), -2000)
+}
+
 OnClose(GuiObj, *) {
     global MAX_WIN_H
     GuiObj.GetPos(, , &ww, &wh)
@@ -1097,6 +1633,7 @@ OnClose(GuiObj, *) {
     IniWrite(SplitH?1:0,  IniFile, "Window", "SplitH")
     IniWrite(Tabs.Value,  IniFile, "Window", "LastTab")
     SaveHistory()
+    SaveDefaults()
     ExitApp()
 }
 
@@ -1645,6 +2182,13 @@ Apply_FindReplace(txt) {
     if useRegex {
         flags := caseSens ? "m)" : "mi)"   ; m) = multiline: ^ and $ match per line
         pat   := flags . findStr
+        ; Expand escape sequences in the replacement string (regex mode only).
+        ; The regex engine handles them in Find but not in Replace.
+        ; Expand escape sequences in the replacement string (regex mode only).
+        ; The regex engine handles \n etc. in Find but not in Replace.
+        replStr := StrReplace(replStr, Chr(92) "n", "`n")
+        replStr := StrReplace(replStr, Chr(92) "t", "`t")
+        replStr := StrReplace(replStr, Chr(92) "r", "`r")
         try {
             if replAll
                 return RegExReplace(txt, pat, replStr)
@@ -2890,7 +3434,7 @@ ShowHelp(tabIndex) {
 "functions similarly.  First versions of this tool were created by feeding screenshots " .
 "of Tidbit's tool to Claude AI.  Thanks go to forum user Just me, for helping to hide the " .
 "TabBar in AHKv2.`n`n" .
-"TOOLBAR (top row)`n" .
+"BUTTON BAR (second row, above the panes)`n" .
 "  Paste        — pastes clipboard into Input pane`n" .
 "  Clear (in)   — clears Input pane (undo-able)`n" .
 "  Wrap         — toggles word-wrap on both panes`n" .
@@ -2899,6 +3443,18 @@ ShowHelp(tabIndex) {
 "  Clear (out)  — clears Output pane`n" .
 "  Undo / Redo  — multi-level undo/redo (up to 20 levels)`n" .
 "  [?]          — show this help window`n`n" .
+"CONFIGURATIONS TOOLBAR (first row, below tab area)`n" .
+"  Saves and restores complete sets of tab control states.`n" .
+"  Type a name and click [Save config] to snapshot all tab settings.`n" .
+"  Select a name and click [Load config] to restore a saved snapshot.`n" .
+"  [Delete config] removes the selected config file from disk.`n" .
+"  Config files are stored as tt<name>.ini in the Data\\ folder.`n" .
+"  Tip: save a config before experimenting so you can restore easily.`n`n" .
+"STICKY CONTROLS`n" .
+"  All tab control states (radios, checkboxes, edit values, etc.) are`n" .
+"  remembered automatically between sessions in Data\\ttDefaults.ini.`n" .
+"  The Configurations toolbar lets you save and switch between named`n" .
+"  sets of those defaults.`n`n" .
 "NAVIGATION`n" .
 "  Click a tab name in the left list to switch tabs.`n`n" .
 "APPLY / SWAP STRIP`n" .
@@ -2906,12 +3462,17 @@ ShowHelp(tabIndex) {
 "  Apply runs the active tab's transform on the Input text.`n" .
 "  Swap exchanges the contents of the two panes (undo-able).`n`n" .
 "KEYBOARD SHORTCUTS`n" .
-"  Ctrl+Z / Ctrl+Y  — Undo / Redo (when no Edit box has focus)`n" .
-"  F1               — Help for the currently active tab`n" .
-"  Esc              — Close`n`n" .
+"  Ctrl+Z / Ctrl+Y      — Undo / Redo (when no Edit box has focus)`n" .
+"  Shift+Alt+Up/Down    — Move current line (or selected lines) up/down in either pane`n" .
+"  F1                   — Help for the currently active tab`n" .
+"  Esc                  — Close`n`n" .
 "SETTINGS`n" .
-"  Window size, split orientation, last active tab, and Find/Replace " .
-"history are saved automatically to ttSettings.ini in the script folder.",
+"  All data files are stored in the Data\\ subfolder next to the script.`n" .
+"  ttSettings.ini  — window geometry, Find/Replace history, and F/R Favorites.`n" .
+"  ttDefaults.ini  — sticky tab control states (auto-saved on close).`n" .
+"  tt<name>.ini    — named configurations saved via the Configurations toolbar.`n" .
+"  Note: F/R Favorites travel with ttSettings.ini and are NOT included in`n" .
+"  named configurations (configs save tab control states only).",
 
         1,
 "Case Tab`n`n" .
@@ -2983,7 +3544,7 @@ ShowHelp(tabIndex) {
 "HISTORY`n" .
 "  Both ComboBoxes remember up to 10 recent entries.  " .
 "Click the dropdown arrow to revisit a previous search or replacement.  " .
-"History is saved to ttSettings.ini and restored on next launch.`n`n" .
+"History is saved to Data\\ttSettings.ini and restored on next launch.`n`n" .
 "FAVORITES`n" .
 "  The Favorites combobox stores named Find/Replace/Regex combinations.`n" .
 "  Scroll through names (mouse wheel or arrow keys) to preview each definition.`n" .
@@ -2992,8 +3553,10 @@ ShowHelp(tabIndex) {
 "    box, then click [Save fave].  If the name already exists you will be asked`n" .
 "    to confirm overwrite.`n" .
 "  To delete: select the name and click [Delete fave].`n" .
-"  Favorites are stored in ttSettings.ini under their own named sections.`n" .
-"  To reorder favorites, open ttSettings.ini and edit the [Favorites] Item keys.`n`n" .
+"  Favorites are stored in Data\\ttSettings.ini, each as its own named`n" .
+"  section (e.g. [Swap first two words on each line]).  You can hand-edit`n" .
+"  or reorder them by opening ttSettings.ini directly; sections appear in`n" .
+"  file order, which is also the order shown in the combo.`n`n" .
 "REGEX EXAMPLES`n" .
 "  Swap first two words on each line`n" .
 "    Find:    ^(\w+)\s+(\w+)`n" .
@@ -3240,10 +3803,12 @@ ShowHelp(tabIndex) {
     helpText := helpTexts.Has(tabIndex) ? helpTexts[tabIndex] : helpTexts[0]
 
     helpGui := Gui("+AlwaysOnTop", title)
-    helpGui.SetFont("s9", "Segoe UI")
-    helpGui.Add("Edit",
+    helpGui.SetFont("s9 " fontColorOpt, "Segoe UI")
+    helpGui.BackColor := formColor
+    editCtrl := helpGui.Add("Edit",
         "x10 y10 w560 h380 ReadOnly -E0x200 -WantReturn -TabStop Multi VScroll",
         helpText)
+    editCtrl.Opt("Background" listColor " c" fontColor)
     closeBtn := helpGui.Add("Button", "x240 y+8 w100 Default", "Close")
     closeBtn.OnEvent("Click", (*) => helpGui.Destroy())
     helpGui.OnEvent("Escape", (*) => helpGui.Destroy())
