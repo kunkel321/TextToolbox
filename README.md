@@ -1,7 +1,7 @@
 # TextToolbox
 a small text manipulation utility
 
-![Screenshot of TextToolbox](https://github.com/kunkel321/TextToolbox/blob/main/TTBscreenshot5-9-2026.png)
+![Screenshot of TextToolbox](https://github.com/kunkel321/TextToolbox/blob/main/TTBscreenshot.png)
 
 AHK Forum Thread: https://www.autohotkey.com/boards/viewtopic.php?f=83&t=140654
 
