@@ -4,7 +4,7 @@ TraySetIcon("shell32.dll", 75)
 
 ; ============================================================
 ;  App:             TextToolbox.ahk
-;  Version Date:    5-16-2026 
+;  Version Date:    7-25-2026 
 ;  By:              Kunkel321 with Claude AI
 ;  GitHub:          https://github.com/kunkel321/TextToolbox
 ;  AHK Forum:       https://www.autohotkey.com/boards/viewtopic.php?f=83&t=140654
@@ -818,23 +818,36 @@ BuildTab_Padding() {
 BuildTab_CsvView() {
     global Tabs, g, TX, TY
     Tabs.UseTab(9)
-    g.Add("Text", "x" (TX+8) " y" (TY+8), "CSV Viewer    Remove col:")
-    global DdlCsvRemove := g.Add("DropDownList", "x+6 yp-3 w160 Choose1", ["(load CSV first)"])
-    global BtnCsvRemove := g.Add("Button", "x+6 yp w70 h22", "Remove")
-    global ChkCsvHdr    := g.Add("Checkbox", "x+16 yp+3 Checked", "First row is header")
+    ; ── Row 1: input parse options (in-delimiter, custom char, header) | column removal ──
+    g.Add("Text", "x" (TX+8) " y" (TY+8), "In delim:")
+    global DdlCsvInDelim  := g.Add("DropDownList", "x+4 yp-3 w96 Choose1",
+        ["Comma", "Tab", "Semicolon", "Pipe", "Space", "Custom…"])
+    global EditCsvInDelim := g.Add("Edit", "x+4 yp w26 Limit1 Disabled", "")
+    global ChkCsvHdr      := g.Add("Checkbox", "x+10 yp+3 Checked", "First row is header")
+    g.Add("Text", "x+14 yp", "Remove col:")
+    global DdlCsvRemove   := g.Add("DropDownList", "x+4 yp-3 w120 Choose1", ["(load CSV first)"])
+    global BtnCsvRemove   := g.Add("Button", "x+4 yp w62 h22", "Remove")
     global LvCsv := g.Add("ListView",
         "x" (TX+8) " y+6 w540 h140 Grid", ["(Apply CSV data below)"])
     ; Enable column header drag-to-reorder (LVS_EX_HEADERDRAGDROP = 0x10)
     exStyle := SendMessage(0x1037, 0, 0, , "ahk_id " LvCsv.Hwnd)  ; LVM_GETEXTENDEDLISTVIEWSTYLE
     SendMessage(0x1036, 0, exStyle | 0x10, , "ahk_id " LvCsv.Hwnd) ; LVM_SETEXTENDEDLISTVIEWSTYLE
-    global BtnCsvExport  := g.Add("Button",   "x" (TX+8) " y+6 w160 h22", "▼ Send to Output pane")
-    global ChkCsvQuote   := g.Add("Checkbox", "x+8 yp+3",                  'Use double-quotes')
+    ; ── Row 2: export options — out-delimiter governs the Send output only ──
+    g.Add("Text", "x" (TX+8) " y+10", "Out delim:")
+    global DdlCsvOutDelim  := g.Add("DropDownList", "x+4 yp-3 w96 Choose1",
+        ["Comma", "Tab", "Semicolon", "Pipe", "Space", "Custom…"])
+    global EditCsvOutDelim := g.Add("Edit", "x+4 yp w26 Limit1 Disabled", "")
+    global BtnCsvExport    := g.Add("Button",   "x+8 yp-1 w160 h22", "▼ Send to Output pane")
+    global ChkCsvQuote     := g.Add("Checkbox", "x+8 yp+3",          'Use double-quotes')
     g.Add("Text", "x+16 yp", "(F1 for tips)")
 
     LvCsv.OnEvent("ColClick", OnCsvColClick)
     BtnCsvRemove.OnEvent("Click", OnCsvRemoveCol)
     BtnCsvExport.OnEvent("Click", OnCsvExport)
     ChkCsvHdr.OnEvent("Click", (*) => (EditIn.Value != "") ? OnApply() : 0)
+    DdlCsvInDelim.OnEvent("Change", OnCsvInDelimChange)
+    EditCsvInDelim.OnEvent("Change", OnCsvInDelimEditChange)
+    DdlCsvOutDelim.OnEvent("Change", OnCsvOutDelimChange)   ; toggle its custom box only
 }
 
 BuildTab_Compare() {
@@ -1393,6 +1406,13 @@ SaveDefaults() {
     ; ── N-Grams ───────────────────────────────────────────────────────────
     global DdlNgramSize
     IniWrite(DdlNgramSize.Value, DefaultsFile, "Tab_NGrams", "GroupSize")
+
+    ; ── CSV View ──────────────────────────────────────────────────────────
+    global DdlCsvInDelim, EditCsvInDelim, DdlCsvOutDelim, EditCsvOutDelim
+    IniWrite(DdlCsvInDelim.Value,   DefaultsFile, "Tab_Csv", "InDelim")
+    IniWrite(EditCsvInDelim.Value,  DefaultsFile, "Tab_Csv", "InCustom")
+    IniWrite(DdlCsvOutDelim.Value,  DefaultsFile, "Tab_Csv", "OutDelim")
+    IniWrite(EditCsvOutDelim.Value, DefaultsFile, "Tab_Csv", "OutCustom")
 }
 
 LoadDefaults() {
@@ -1522,6 +1542,19 @@ LoadDefaults() {
     ; ── N-Grams ───────────────────────────────────────────────────────────
     global DdlNgramSize
     DdlNgramSize.Value := Integer(IniRead(DefaultsFile, "Tab_NGrams", "GroupSize", 2))
+
+    ; ── CSV View ──────────────────────────────────────────────────────────
+    global DdlCsvInDelim, EditCsvInDelim, DdlCsvOutDelim, EditCsvOutDelim
+    inN := Integer(IniRead(DefaultsFile, "Tab_Csv", "InDelim", 1))
+    if (inN >= 1 && inN <= 6)
+        DdlCsvInDelim.Choose(inN)
+    EditCsvInDelim.Value   := IniRead(DefaultsFile, "Tab_Csv", "InCustom", "")
+    EditCsvInDelim.Enabled := (inN = 6)
+    outN := Integer(IniRead(DefaultsFile, "Tab_Csv", "OutDelim", 1))
+    if (outN >= 1 && outN <= 6)
+        DdlCsvOutDelim.Choose(outN)
+    EditCsvOutDelim.Value   := IniRead(DefaultsFile, "Tab_Csv", "OutCustom", "")
+    EditCsvOutDelim.Enabled := (outN = 6)
 }
 
 ; ============================================================
@@ -2674,12 +2707,62 @@ GetPadMode() {
     return 3
 }
 
+; Resolve a delimiter dropdown (+ its custom-char edit) to a single character.
+_ResolveDelim(ddl, customEdit) {
+    switch ddl.Value {
+        case 1: return ","          ; Comma
+        case 2: return "`t"         ; Tab
+        case 3: return ";"          ; Semicolon
+        case 4: return "|"          ; Pipe
+        case 5: return " "          ; Space
+        case 6:                     ; Custom — first char of the edit box
+            c := customEdit.Value
+            return (c = "") ? "," : SubStr(c, 1, 1)
+    }
+    return ","
+}
+
+; Delimiter used to PARSE the Input pane into the table.
+GetCsvInDelim() {
+    global DdlCsvInDelim, EditCsvInDelim
+    return _ResolveDelim(DdlCsvInDelim, EditCsvInDelim)
+}
+
+; Delimiter used to JOIN the table back out on Send — independent of the input.
+GetCsvOutDelim() {
+    global DdlCsvOutDelim, EditCsvOutDelim
+    return _ResolveDelim(DdlCsvOutDelim, EditCsvOutDelim)
+}
+
+; In-delimiter dropdown changed: toggle its custom box and re-parse the input.
+OnCsvInDelimChange(*) {
+    global DdlCsvInDelim, EditCsvInDelim, EditIn
+    EditCsvInDelim.Enabled := (DdlCsvInDelim.Value = 6)   ; editable only in Custom mode
+    if (EditIn.Value != "")
+        OnApply()
+}
+
+; Custom in-delimiter char changed: re-parse (only relevant in Custom mode).
+OnCsvInDelimEditChange(*) {
+    global DdlCsvInDelim, EditIn
+    if (DdlCsvInDelim.Value = 6 && EditIn.Value != "")
+        OnApply()
+}
+
+; Out-delimiter dropdown changed: only toggle its custom box. It affects the
+; NEXT Send, not the table — so nothing is re-parsed here.
+OnCsvOutDelimChange(*) {
+    global DdlCsvOutDelim, EditCsvOutDelim
+    EditCsvOutDelim.Enabled := (DdlCsvOutDelim.Value = 6)
+}
+
 Apply_CsvView(txt) {
     global LvCsv, CsvSortCol, CsvSortAsc, CsvHeaders, ChkCsvHdr
     CsvSortCol  := 0
     CsvSortAsc  := true
     CsvHeaders  := []
     hasHdr      := ChkCsvHdr.Value   ; 1 = first row is header, 0 = all rows are data
+    delim       := GetCsvInDelim()
 
     ; Clear existing columns and rows
     LvCsv.Delete()
@@ -2699,7 +2782,7 @@ Apply_CsvView(txt) {
     ; Determine headers and data-row start index
     if hasHdr {
         ; First row supplies column names
-        headers := ParseCSVLine(lines[1])
+        headers := ParseCSVLine(lines[1], delim)
         if (headers.Length = 0) {
             LvCsv.InsertCol(1, 140, "(empty)")
             return
@@ -2707,7 +2790,7 @@ Apply_CsvView(txt) {
         dataStart := 2
     } else {
         ; Peek at first row to get column count, generate generic names
-        firstRow := ParseCSVLine(lines[1])
+        firstRow := ParseCSVLine(lines[1], delim)
         if (firstRow.Length = 0) {
             LvCsv.InsertCol(1, 140, "(empty)")
             return
@@ -2728,7 +2811,7 @@ Apply_CsvView(txt) {
         rowLine := lines[A_Index + (dataStart - 1)]
         if (Trim(rowLine) = "")
             continue
-        fields := ParseCSVLine(rowLine)
+        fields := ParseCSVLine(rowLine, delim)
         ; Pad to header count if needed
         while fields.Length < headers.Length
             fields.Push("")
@@ -2742,8 +2825,10 @@ Apply_CsvView(txt) {
     PopulateCsvRemoveDdl()
 }
 
-; Parse one RFC-4180 CSV line into an Array of field strings
-ParseCSVLine(line) {
+; Parse one RFC-4180-style line into an Array of field strings.
+; delim is a single character (comma, tab, semicolon, etc.). Double-quote
+; escaping is honored for every delimiter so quoted fields may contain it.
+ParseCSVLine(line, delim := ",") {
     fields := []
     pos    := 1
     len    := StrLen(line)
@@ -2771,17 +2856,17 @@ ParseCSVLine(line) {
                 }
             }
             fields.Push(field)
-            ; Consume trailing comma
-            if (pos <= len && SubStr(line, pos, 1) = ",")
+            ; Consume trailing delimiter
+            if (pos <= len && SubStr(line, pos, 1) = delim)
                 pos++
         } else {
-            ; Unquoted field — read to next comma
+            ; Unquoted field — read to next delimiter
             start := pos
-            while (pos <= len && SubStr(line, pos, 1) != ",")
+            while (pos <= len && SubStr(line, pos, 1) != delim)
                 pos++
             fields.Push(SubStr(line, start, pos - start))
             if (pos <= len)
-                pos++   ; skip comma
+                pos++   ; skip delimiter
         }
     }
     return fields
@@ -2964,6 +3049,7 @@ OnCsvExport(*) {
     rowCount   := LvCsv.GetCount()
     forceQuote := ChkCsvQuote.Value
     hasHdr     := ChkCsvHdr.Value
+    delim      := GetCsvOutDelim()   ; export joins with the OUT delimiter (independent of input)
     if (colCount = 0)
         return
 
@@ -2974,24 +3060,25 @@ OnCsvExport(*) {
     if hasHdr {
         headerFields := []
         for logicalIdx in order
-            headerFields.Push(CsvQuote(logicalIdx <= CsvHeaders.Length ? CsvHeaders[logicalIdx] : "", forceQuote))
-        csvLines.Push(JoinArr(headerFields, ","))
+            headerFields.Push(CsvQuote(logicalIdx <= CsvHeaders.Length ? CsvHeaders[logicalIdx] : "", delim, forceQuote))
+        csvLines.Push(JoinArr(headerFields, delim))
     }
 
     Loop rowCount {
         ri := A_Index
         rowFields := []
         for logicalIdx in order
-            rowFields.Push(CsvQuote(LvCsv.GetText(ri, logicalIdx), forceQuote))
-        csvLines.Push(JoinArr(rowFields, ","))
+            rowFields.Push(CsvQuote(LvCsv.GetText(ri, logicalIdx), delim, forceQuote))
+        csvLines.Push(JoinArr(rowFields, delim))
     }
 
     EditOut.Value := JoinLines(csvLines)
 }
 
-; Quote a CSV field if it contains comma, quote, or newline — or if forceQuote is true
-CsvQuote(val, forceQuote := false) {
-    if (forceQuote || RegExMatch(val, '[,"`n`r]'))
+; Quote a field if it contains the active delimiter, a quote, or a newline —
+; or if forceQuote is true. InStr (not regex) avoids escaping delimiter metachars.
+CsvQuote(val, delim := ",", forceQuote := false) {
+    if (forceQuote || InStr(val, delim) || InStr(val, '"') || InStr(val, "`n") || InStr(val, "`r"))
         return '"' StrReplace(val, '"', '""') '"'
     return val
 }
@@ -3707,21 +3794,36 @@ ShowHelp(tabIndex) {
 
         9,
 "CSV View Tab`n`n" .
-"Parses CSV (comma-separated values) text from the Input pane and " .
-"displays it as a sortable, interactive table.`n`n" .
+"Parses delimited text (CSV, TSV, or a custom delimiter) from the Input " .
+"pane and displays it as a sortable, interactive table.`n`n" .
 "USAGE`n" .
-"  1. Paste CSV into the Input pane.`n" .
-"  2. Switch to CSV View and click Apply (or press the Apply button).`n" .
-"  3. The first row is treated as column headers.`n`n" .
+"  1. Paste delimited text into the Input pane.`n" .
+"  2. Set 'In delim' to match your data, switch to CSV View, click Apply.`n" .
+"  3. If 'First row is header' is checked, row 1 supplies column names;`n" .
+"     otherwise columns are labelled Col 1, Col 2, ...`n`n" .
+"DELIMITERS  (two independent controls)`n" .
+"  In delim  (top row)    — how the Input pane is split into columns.`n" .
+"  Out delim (bottom row) — how the table is joined back on Send.`n" .
+"  Presets: Comma / Tab / Semicolon / Pipe / Space.  'Custom…' enables the`n" .
+"  small box beside it — type any single character to use it.`n" .
+"  Changing 'In delim' re-parses immediately; 'Out delim' only affects the`n" .
+"  next Send, so it never disturbs the table on screen.`n`n" .
+"CONVERTING FORMATS`n" .
+"  Set 'In delim' to the source (e.g. Tab) and 'Out delim' to the target`n" .
+"  (e.g. Comma), then Apply and Send.  TSV in, CSV out.`n`n" .
+"QUOTING`n" .
+"  A field wrapped in double-quotes may contain the delimiter; a doubled`n" .
+"  quote inside such a field means one literal quote.  This holds for both`n" .
+"  delimiters, on parse and on export.`n`n" .
 "INTERACTIVE FEATURES`n" .
 "  Click a column header  — sort ascending; click again for descending`n" .
 "  Drag a column header   — reorder columns`n" .
 "  Remove col dropdown    — select a column name then click Remove to delete it`n`n" .
 "EXPORT`n" .
 "  '▼ Send to Output pane' exports the current table (respecting column " .
-"order and removed columns) back to CSV text in the Output pane.`n" .
+"order and removed columns) to the Output pane, joined with 'Out delim'.`n" .
 "  'Use double-quotes' — forces quoting on every field (not just fields " .
-"that contain commas or quotes).`n`n" .
+"that contain the delimiter or a quote).`n`n" .
 "LIMITATION`n" .
 "  Do not both reorder columns AND sort in the same session — the " .
 "combination can corrupt column display.  Workaround: reorder → export " .
